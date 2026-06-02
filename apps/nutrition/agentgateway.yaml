@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# Exposes the nutrition HTTP API as an MCP server via agentgateway — no per-app
+# MCP code; the gateway derives tools from the generated OpenAPI spec.
+#
+#   1. generate the spec:  npm run openapi > openapi.json
+#   2. run the API:        PORT=8080 npm run serve
+#   3. run the gateway:    agentgateway -f agentgateway.yaml      # MCP on :3000
+#
+# (Alternative with no middleware at all: `npm run mcp` — the direct stdio MCP server.)
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - policies:
+        cors:
+          allowOrigins: ["*"]
+          allowHeaders: ["*"]
+          exposeHeaders: ["Mcp-Session-Id"]
+      backends:
+      - mcp:
+          targets:
+          - name: nutrition
+            openapi:
+              schema:
+                file: ./openapi.json
+              host: localhost:8080

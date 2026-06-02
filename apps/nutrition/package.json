@@ -6,7 +6,8 @@
     "demo": "npx tsx src/demo.ts",
     "cli": "tsx src/cli.ts",
     "serve": "tsx src/http.ts",
-    "mcp": "tsx src/mcp.ts"
+    "mcp": "tsx src/mcp.ts",
+    "openapi": "tsx src/openapi.ts"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",

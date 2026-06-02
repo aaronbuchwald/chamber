@@ -14,3 +14,4 @@ node_modules/
 apps/notes/vault/
 apps/notes/vault-demo/
 apps/todo/todos.md
+apps/nutrition/openapi.json
