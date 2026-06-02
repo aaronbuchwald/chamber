@@ -6,9 +6,12 @@
     "demo": "npx tsx src/demo.ts",
     "cli": "tsx src/cli.ts",
     "serve": "tsx src/http.ts",
-    "mcp": "tsx src/mcp.ts"
+    "mcp": "tsx src/mcp.ts",
+    "test": "tsx --test test/todos.test.ts test/cli.test.ts test/http.test.ts test/mcp.test.ts test/adversarial.test.ts"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^25.9.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }

@@ -17,7 +17,10 @@ function todoFilePath(): string {
 function readLines(): string[] {
   const p = todoFilePath();
   if (!fs.existsSync(p)) return [];
-  return fs.readFileSync(p, "utf8").split("\n");
+  // Strip \r so CRLF (\r\n) files are handled correctly: regex anchors and .
+  // do not match \r, so a trailing \r on each line would silently swallow all
+  // todo items and corrupt text round-trips.
+  return fs.readFileSync(p, "utf8").split("\n").map((l) => l.replace(/\r$/, ""));
 }
 
 function writeLines(lines: string[]): void {
@@ -49,6 +52,9 @@ function todoLine(todo: Omit<Todo, "index">): string {
 // ── public operations ─────────────────────────────────────────────────────────
 
 export function add(text: string): void {
+  if (text.includes("\n") || text.includes("\r")) {
+    throw new Error("Todo text must not contain newline characters.");
+  }
   const lines = readLines();
   const newLine = `- [ ] ${text}`;
   // Ensure file ends without a trailing blank — just append
@@ -62,6 +68,9 @@ export function add(text: string): void {
 }
 
 export function setDone(n: number, done: boolean): void {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Index must be a positive integer, got ${n}.`);
+  }
   const lines = readLines();
   let todoCount = 0;
   const updated = lines.map((line) => {
