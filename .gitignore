@@ -2,6 +2,9 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 
 # Beads per-repo credential encryption key (secret - never commit)
 .beads/.beads-credential-key
