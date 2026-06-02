@@ -1,0 +1,10 @@
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
+
+# Beads per-repo credential encryption key (secret - never commit)
+.beads/.beads-credential-key
+
+# Claude Code agent workspace
+.claude/
