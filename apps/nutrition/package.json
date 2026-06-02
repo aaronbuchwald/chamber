@@ -7,17 +7,19 @@
     "cli": "tsx src/cli.ts",
     "serve": "tsx src/http.ts",
     "mcp": "tsx src/mcp.ts",
-    "openapi": "tsx src/openapi.ts"
+    "openapi": "tsx src/openapi.ts",
+    "test": "npx tsx --test test/*.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/better-sqlite3": "^7.6.8",
-    "@types/yargs": "^17.0.33",
     "@types/node": "^20.14.0",
-    "typescript": "^5.4.5",
-    "tsx": "^4.15.7"
+    "@types/yargs": "^17.0.33",
+    "tsx": "^4.15.7",
+    "typescript": "^5.4.5"
   }
 }
