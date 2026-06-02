@@ -5,7 +5,8 @@
  *   1. Only .md / .markdown extensions allowed for write/append.
  *   2. Reject absolute paths, leading ~, NUL or control chars, .. segments.
  *   3. Resolve final path and verify it stays within vault root (anti-traversal).
- *   4. Content stored verbatim as UTF-8; never parsed or executed.
+ *   4. Reject any symlink at any component of the resolved path (symlink escape).
+ *   5. Content stored verbatim as UTF-8; never parsed or executed.
  */
 
 import * as fs from "node:fs";
@@ -55,7 +56,44 @@ export class Vault {
       throw new VaultError(`Path escapes vault root: ${relativePath}`);
     }
 
+    // 5. Reject any symlink at any component of the resolved path.
+    //    path.resolve() does NOT follow symlinks, so a symlink inside the vault
+    //    that points outside passes the root-containment check above but would
+    //    escape the sandbox at the I/O call. We walk each path component from
+    //    the vault root downward and reject the first symlink found.
+    this.assertNoSymlink(resolved);
+
     return resolved;
+  }
+
+  /**
+   * Walk every component of `resolved` that lies under `this.root` and throw
+   * a VaultError if any component is a symbolic link.
+   *
+   * Components that do not yet exist (e.g. a new file being written) are skipped
+   * after the first ENOENT — they are safe because nothing is there yet.
+   */
+  private assertNoSymlink(resolved: string): void {
+    const relative = path.relative(this.root, resolved);
+    // Empty relative means resolved === root, nothing to check.
+    if (!relative) return;
+
+    const segments = relative.split(path.sep);
+    let current = this.root;
+    for (const segment of segments) {
+      current = path.join(current, segment);
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(current);
+      } catch (err: unknown) {
+        // ENOENT: the rest of the path doesn't exist yet — safe.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw err;
+      }
+      if (stat.isSymbolicLink()) {
+        throw new VaultError(`Symlinks are not allowed inside the vault: ${current}`);
+      }
+    }
   }
 
   /** Assert that the path has an allowed markdown extension. */
@@ -70,11 +108,19 @@ export class Vault {
 
   // ── public API ────────────────────────────────────────────────────────────
 
-  /** List all .md / .markdown files in the vault, sorted. */
+  /**
+   * List all .md / .markdown files in the vault, sorted.
+   *
+   * Symlinked entries (files or directories) are intentionally excluded:
+   * including them would present names that the other operations would then
+   * refuse to access, which is confusing and potentially misleading.
+   */
   list(): string[] {
     const results: string[] = [];
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        // Skip symlinks — they are not permitted vault members.
+        if (entry.isSymbolicLink()) continue;
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           walk(full);
