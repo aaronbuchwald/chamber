@@ -20,13 +20,13 @@ const component = z.union([
     const i = s.lastIndexOf(":");
     const name = i === -1 ? s.trim() : s.slice(0, i).trim();
     const qty_g = i === -1 ? NaN : parseFloat(s.slice(i + 1));
-    if (!name || Number.isNaN(qty_g) || qty_g <= 0) {
+    if (!name || Number.isNaN(qty_g) || !isFinite(qty_g) || qty_g <= 0) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Expected "name:grams", got "${s}"` });
       return z.NEVER;
     }
     return { component: name, qty_g };
   }),
-  z.object({ component: z.string(), qty_g: z.number().positive() }),
+  z.object({ component: z.string(), qty_g: z.number().finite().positive() }),
 ]);
 
 export const app = defineApp({
