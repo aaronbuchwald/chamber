@@ -1,0 +1,96 @@
+name: Beads ↔ GitHub Sync
+
+# Auto-sync beads issues with GitHub on push to the default branch and on
+# pull request merges. The workflow restores the Dolt DB from the JSONL
+# snapshot on the 'beads-backup' branch, runs a bidirectional sync against
+# GitHub Issues, then exports the updated snapshot back to 'beads-backup'.
+#
+# Worktree/agent runs use --sandbox locally so they never touch this shared
+# DB; only this workflow (and developers on the default branch) do
+# authoritative syncs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed]
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync beads ↔ GitHub Issues
+    runs-on: ubuntu-latest
+    # Only run on a real merge for PR events (skip closed-without-merge);
+    # push and manual dispatch always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.merged == true
+    # Prevent concurrent syncs racing on the beads-backup branch.
+    concurrency:
+      group: beads-sync
+      cancel-in-progress: false
+    permissions:
+      contents: write   # push to beads-backup branch
+      issues: write     # read/write issues
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so bd backup export-git can find the beads-backup branch.
+          fetch-depth: 0
+
+      - name: Install Dolt
+        env:
+          DOLT_VERSION: "1.83.6"
+        run: |
+          set -euo pipefail
+          URL="https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh"
+          curl -fsSL "$URL" | sudo bash
+          dolt version
+
+      - name: Install bd (beads CLI)
+        env:
+          BD_VERSION: "0.61.0"
+        run: |
+          set -euo pipefail
+          ARCHIVE="beads_${BD_VERSION}_linux_amd64.tar.gz"
+          URL="https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/${ARCHIVE}"
+          curl -fsSL "$URL" -o /tmp/beads.tar.gz
+          tar -xzf /tmp/beads.tar.gz -C /tmp
+          # The tarball extracts a 'bd' binary at the top level.
+          install -m 0755 /tmp/bd /usr/local/bin/bd
+          bd --version
+
+      - name: Initialize beads DB and restore from backup branch
+        run: |
+          set -euo pipefail
+          # Initialize an empty Dolt DB (bd init creates the database and schema).
+          # --skip-hooks avoids reinstalling git hooks in CI.
+          # --skip-agents avoids writing AGENTS.md.
+          # --quiet suppresses interactive prompts.
+          bd init --skip-hooks --skip-agents --quiet
+          # Fetch the JSONL backup from the beads-backup branch and restore it.
+          # The || fallback handles the bootstrap case where the branch doesn't exist yet.
+          bd backup fetch-git --branch beads-backup --remote origin || echo "No backup branch found, starting fresh"
+
+      - name: Configure GitHub integration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bd config set github.repository ${{ github.repository }}
+          bd config set github.token "$GITHUB_TOKEN"
+
+      - name: Verify GitHub integration status
+        run: bd github status
+
+      - name: Run bidirectional sync (prefer newer)
+        run: bd github sync --prefer-newer
+
+      - name: Export updated DB back to backup branch
+        run: |
+          # Configure git identity for the bot commit on beads-backup branch.
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          bd backup export-git --branch beads-backup --remote origin
