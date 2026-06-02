@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "description": "Chamber prototype: simple todo list over markdown",
   "scripts": {
-    "demo": "npx tsx src/demo.ts"
+    "demo": "npx tsx src/demo.ts",
+    "cli": "tsx src/cli.ts",
+    "serve": "tsx src/http.ts",
+    "mcp": "tsx src/mcp.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

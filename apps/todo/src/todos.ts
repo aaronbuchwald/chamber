@@ -75,8 +75,7 @@ export function setDone(n: number, done: boolean): void {
     return line;
   });
   if (todoCount < n) {
-    console.error(`No item at index ${n} (only ${todoCount} items).`);
-    process.exit(1);
+    throw new Error(`No item at index ${n} (only ${todoCount} items).`);
   }
   writeLines(updated);
 }
