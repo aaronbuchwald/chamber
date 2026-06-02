@@ -8,3 +8,8 @@
 
 # Claude Code agent workspace
 .claude/
+
+# Prototype app build/runtime artifacts
+node_modules/
+apps/notes/vault-demo/
+apps/todo/todos.md

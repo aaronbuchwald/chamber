@@ -1,0 +1,12 @@
+{
+  "name": "chamber-todo",
+  "version": "0.1.0",
+  "description": "Chamber prototype: simple todo list over markdown",
+  "scripts": {
+    "demo": "npx tsx src/demo.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

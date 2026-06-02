@@ -1,0 +1,19 @@
+{
+  "name": "chamber-nutrition",
+  "version": "0.1.0",
+  "description": "Nutrition tracker prototype using medallion architecture in SQLite",
+  "scripts": {
+    "demo": "npx tsx src/demo.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/yargs": "^17.0.33",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5",
+    "tsx": "^4.15.7"
+  }
+}
