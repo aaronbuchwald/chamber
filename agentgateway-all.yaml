@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# One agentgateway fronting all three Chamber apps as a single MCP endpoint.
+# Each app's HTTP API is exposed as MCP tools derived from its generated
+# OpenAPI spec — no per-app MCP code.
+#
+# Prereqs (see /tmp/chamber-*.log): the three HTTP APIs must be running:
+#   nutrition -> :8080   notes -> :8081   todo -> :8082
+# and each app's openapi.json must be generated (curl :PORT/openapi.json).
+#
+# Run:  /tmp/agentgateway -f agentgateway-all.yaml      # MCP on http://localhost:3000/mcp
+#
+# Tools are namespaced by target name, e.g. nutrition_log_meal, notes_write,
+# todo_add. The gateway nests args under a `body` field per the OpenAPI hop.
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - policies:
+        cors:
+          allowOrigins: ["*"]
+          allowHeaders: ["*"]
+          exposeHeaders: ["Mcp-Session-Id"]
+      backends:
+      - mcp:
+          targets:
+          - name: nutrition
+            openapi:
+              schema:
+                file: /Users/aaronbuchwald/code/prototypes/chamber/apps/nutrition/openapi.json
+              host: localhost:8080
+          - name: notes
+            openapi:
+              schema:
+                file: /Users/aaronbuchwald/code/prototypes/chamber/apps/notes/openapi.json
+              host: localhost:8081
+          - name: todo
+            openapi:
+              schema:
+                file: /Users/aaronbuchwald/code/prototypes/chamber/apps/todo/openapi.json
+              host: localhost:8082
+          # Obsidian (hermes vault) via the Local REST API plugin. This is a
+          # *stdio* MCP server the gateway spawns and federates alongside the
+          # OpenAPI-derived apps above. The vault is whichever Obsidian vault has
+          # the Local REST API plugin enabled — enable it ONLY in the hermes vault
+          # so just that one is exposed. Tools appear regardless, but calls fail
+          # until Obsidian is running and OBSIDIAN_API_KEY (from .env) is valid.
+          - name: obsidian
+            stdio:
+              cmd: npx
+              args: ["-y", "obsidian-mcp-server@3.2.4"]
+              env:
+                MCP_TRANSPORT_TYPE: stdio
+                MCP_LOG_LEVEL: error
+                OBSIDIAN_BASE_URL: "http://127.0.0.1:27123"
+                OBSIDIAN_VERIFY_SSL: "false"
+                # OBSIDIAN_API_KEY is deliberately NOT set here — it's a secret and
+                # this file is version-controlled. The gateway inherits it from its
+                # own environment (start.sh loads it from .env) and passes it through
+                # to this spawned process.
