@@ -139,11 +139,32 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+/** Recursively delete boolean `exclusiveMinimum`/`exclusiveMaximum` keywords (draft-04
+ *  style) so the schema is valid under both OpenAPI 3.0 and JSON Schema 2020-12. */
+function stripBooleanExclusives(node: unknown): void {
+  if (Array.isArray(node)) { for (const item of node) stripBooleanExclusives(item); return; }
+  if (node && typeof node === "object") {
+    const obj = node as Record<string, unknown>;
+    for (const key of ["exclusiveMinimum", "exclusiveMaximum"]) {
+      if (typeof obj[key] === "boolean") delete obj[key];
+    }
+    for (const value of Object.values(obj)) stripBooleanExclusives(value);
+  }
+}
+
 /** Generate an OpenAPI 3.1 document from the registry (one POST op per route). */
 export function openApiDoc(app: AppDef): unknown {
   const paths: Record<string, unknown> = {};
   for (const op of app.operations) {
+    // Keep the openApi3 target: agentgateway's OpenAPI parser is 3.0-flavored and
+    // expects `exclusiveMinimum`/`exclusiveMaximum` to be *booleans* (draft-04 style);
+    // a numeric form makes it reject the spec. But the Claude API validates the
+    // resulting MCP tool schema against JSON Schema draft 2020-12, where those same
+    // keywords must be *numbers* — so the boolean form is rejected downstream.
+    // Sidestep the conflict entirely by dropping the boolean exclusive* markers and
+    // keeping plain `minimum`/`maximum`, which both layers accept.
     const schema = zodToJsonSchema(op.input, { target: "openApi3", $refStrategy: "none" });
+    stripBooleanExclusives(schema);
     paths[`/${op.name}`] = {
       post: {
         operationId: op.name,
