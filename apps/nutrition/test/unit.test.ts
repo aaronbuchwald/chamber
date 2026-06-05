@@ -87,7 +87,8 @@ function freshDb(): Database.Database {
 
 // We import at top level — tsx will handle TS resolution for us.
 import { seedReferenceData } from "../src/seed.js";
-import { logMeal, getMealNutrition, listMeals } from "../src/operations.js";
+import { logMeal, getMealNutrition, listMeals, enrichMeal } from "../src/operations.js";
+import type { NutritionProvider, ProviderResult } from "../src/nutrition_source.js";
 import { app } from "../src/app.js";
 import { z } from "../../../packages/appkit/src/index.js";
 
@@ -283,6 +284,85 @@ describe("unknown component", () => {
     // Should return no rows (the JOIN to component_ingredients will find nothing)
     const rows = getMealNutrition(db, id);
     assert.equal(rows.length, 0, "No nutrition rows expected for unknown component");
+  });
+});
+
+describe("enrichMeal (offline, fake provider)", () => {
+  // A deterministic in-memory provider — never touches the network. It records every
+  // lookup so we can assert the second enrichMeal call resolves from cache (no re-lookup).
+  function makeFakeProvider(): NutritionProvider & { lookups: string[] } {
+    const lookups: string[] = [];
+    return {
+      lookups,
+      async lookup(query: string): Promise<ProviderResult | null> {
+        lookups.push(query);
+        if (query === "unicorn meat") {
+          return {
+            canonical_name: "unicorn meat",
+            external_id: "fake-unicorn-1",
+            nutrients: [
+              { nutrient_id: "nut_protein", amount_per_100g: 20 },
+              { nutrient_id: "nut_carbs", amount_per_100g: 0 },
+              { nutrient_id: "nut_fat", amount_per_100g: 10 },
+              { nutrient_id: "nut_vitc", amount_per_100g: 0 },
+              { nutrient_id: "nut_iron", amount_per_100g: 3 },
+            ],
+          };
+        }
+        return null; // unknown to the provider
+      },
+    };
+  }
+
+  it("fills nutrition for an unmapped component, then is an idempotent cached skip", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+
+    // "unicorn meat" is not in the bundled reference data, so it resolves to no nutrition.
+    const id = logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }]);
+    assert.equal(getMealNutrition(db, id).length, 0, "unmapped component should start with no nutrients");
+
+    const fake = makeFakeProvider();
+
+    // 1st enrich: provider is consulted once and the result is cached into silver/gold tables.
+    const first = await enrichMeal(db, id, fake);
+    assert.equal(fake.lookups.length, 1, "provider should be consulted exactly once on first enrich");
+    assert.deepEqual(first.enriched, [{ component: "unicorn meat", ingredient: "unicorn meat" }]);
+    assert.deepEqual(first.cached, []);
+    assert.deepEqual(first.not_found, []);
+
+    // getMealNutrition now reflects the freshly cached data: 100g * 20/100 = 20g protein.
+    const rows = getMealNutrition(db, id);
+    assert.equal(rows.length, 5, `expected 5 nutrient rows after enrich, got ${rows.length}`);
+    const protein = rows.find((r) => r.nutrient === "Protein");
+    assert.ok(protein, "Protein row should exist after enrich");
+    assert.ok(
+      Math.abs(protein!.amount - 20) < 0.001,
+      `Expected Protein ≈ 20g, got ${protein!.amount}`
+    );
+
+    // 2nd enrich: the component now resolves locally, so it's a cached skip — no 2nd lookup.
+    const second = await enrichMeal(db, id, fake);
+    assert.equal(fake.lookups.length, 1, "provider must NOT be consulted again (idempotent cache skip)");
+    assert.deepEqual(second.enriched, [], "nothing newly enriched on the second call");
+    assert.deepEqual(second.cached, ["unicorn meat"], "component should report as cached on second call");
+    assert.deepEqual(second.not_found, []);
+
+    // And nutrition is unchanged — no duplicate ingredient/nutrient rows were written.
+    assert.deepEqual(getMealNutrition(db, id), rows, "nutrition should be identical after the idempotent re-enrich");
+  });
+
+  it("reports components the provider has no data for as not_found", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+
+    const id = logMeal(db, "Void soup", [{ component: "dark matter", qty_g: 50 }]);
+    const fake = makeFakeProvider();
+
+    const outcome = await enrichMeal(db, id, fake);
+    assert.deepEqual(outcome.not_found, ["dark matter"], "provider returned null → not_found");
+    assert.deepEqual(outcome.enriched, []);
+    assert.equal(getMealNutrition(db, id).length, 0, "still no nutrition for an unresolvable component");
   });
 });
 

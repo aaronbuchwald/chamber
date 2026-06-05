@@ -74,7 +74,12 @@
     .pill.micro { background: var(--micro); }
 
     .empty, .loading { color: var(--muted); padding: 24px 0; text-align: center; }
+    .empty strong { color: var(--text); }
     .err { color: var(--danger); padding: 10px 0; }
+
+    .fetch-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+    .fetch-status { font-size: 12px; color: var(--muted); }
+    .fetch-status.err-text { color: var(--danger); }
 
     /* form */
     dialog {
@@ -192,20 +197,61 @@
       card.querySelector(".meal-time").textContent = fmtTime(m.eaten_at);
       const body = card.querySelector(".meal-body");
       let loaded = false;
-      card.querySelector(".meal-head").addEventListener("click", async () => {
-        card.classList.toggle("open");
-        if (loaded || !card.classList.contains("open")) return;
-        loaded = true;
+
+      // (Re-)render this meal's nutrition into the body, with a Fetch-nutrition action.
+      async function renderNutrition() {
         try {
           const rows = await call("nutrition_for", { meal_id: m.id });
           body.innerHTML = "";
           body.appendChild(nutritionTable(rows));
+          body.appendChild(fetchFooter(m.id, rows, renderNutrition));
         } catch (e) {
           loaded = false;
           body.innerHTML = `<div class="err">${e.message}</div>`;
         }
+      }
+
+      card.querySelector(".meal-head").addEventListener("click", async () => {
+        card.classList.toggle("open");
+        if (loaded || !card.classList.contains("open")) return;
+        loaded = true;
+        await renderNutrition();
       });
       return card;
+    }
+
+    // Footer with a "Fetch nutrition" button. enrich_meal looks up any unknown
+    // components from an external source (USDA/LLM), caches them, then we re-render.
+    function fetchFooter(mealId, rows, rerender) {
+      const footer = document.createElement("div");
+      footer.className = "fetch-row";
+      const btn = document.createElement("button");
+      btn.textContent = rows.length ? "Fetch missing nutrition" : "Fetch nutrition";
+      const status = document.createElement("span");
+      status.className = "fetch-status";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        status.textContent = "Looking up external sources…";
+        status.classList.remove("err-text");
+        try {
+          const outcome = await call("enrich_meal", { meal_id: mealId });
+          const got = outcome.enriched?.length ?? 0;
+          const missing = outcome.not_found?.length ?? 0;
+          await rerender();
+          if (got) {
+            // rerender() rebuilt the footer; nothing more to show here.
+          } else if (missing) {
+            // The footer was rebuilt; surface the miss via the page-level error banner.
+            showError(`No external data found for: ${outcome.not_found.join(", ")}.`);
+          }
+        } catch (e) {
+          status.textContent = "Lookup failed: " + e.message;
+          status.classList.add("err-text");
+          btn.disabled = false;
+        }
+      });
+      footer.append(btn, status);
+      return footer;
     }
 
     function nutritionTable(rows) {
@@ -213,7 +259,9 @@
       if (!rows.length) {
         const d = document.createElement("div");
         d.className = "empty";
-        d.textContent = "No nutrient data (components didn’t map to known ingredients).";
+        d.innerHTML =
+          "No nutrient data yet — these components aren’t in the local reference data.<br>" +
+          "Use <strong>Fetch nutrition</strong> below to look them up from an external source and cache them.";
         frag.appendChild(d);
         return frag;
       }

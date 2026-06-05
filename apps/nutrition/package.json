@@ -11,6 +11,7 @@
     "test": "npx tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
     "better-sqlite3": "^9.4.3",
     "yargs": "^17.7.2"
   },
