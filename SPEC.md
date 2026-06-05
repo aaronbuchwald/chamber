@@ -3,7 +3,7 @@
 *Sandboxed, portable MCP servers.*
 
 **Status:** Draft v0.1
-**Date:** 2026-06-02
+**Date:** 2026-06-05
 
 ---
 
@@ -604,12 +604,22 @@ Capabilities follow **POLA** (principle of least authority): the default server 
 
 ---
 
-## 14. Conformance
+## 14. Conformance, test coverage, and review
+
+A change to a host, a component, or this spec **progresses correctly** only when **three independent gates** pass for the phase it targets:
+
+1. **Automated conformance + test coverage** (§14.1–§14.3) — the suites are green and the required cases for the touched capability exist.
+2. **Adversarial agent review** (§14.4) — an automated red-team agent tried to break the invariants and filed every gap; no high-or-above finding is left open.
+3. **Human review** (§14.5) — a person signed off on the trust-boundary surfaces an agent may not certify alone.
+
+§14.6 ties these to per-phase **progression gates** so "are we on track?" is an objective check, not a judgment call. All three gates are mandatory; passing automated tests alone is **not** sufficient to land a trust-boundary change.
+
+### 14.1 Reference conformance suite
 
 A reference test suite (`chamber-conformance`) that any host or component can run:
 
 **Host conformance**
-- Implements every `mcp-server` import; rejects ungranted imports at instantiation.
+- Implements every `mcp-server` import; rejects ungranted imports at instantiation (fail-closed).
 - Enforces all path rules and quotas (negative tests: `..`, absolute, non‑`.md`, oversize).
 - MCP mapping round‑trips (`initialize`/`tools/list`/`tools/call`/`resources/*`).
 - Applies CPU/memory/timeout limits.
@@ -623,6 +633,80 @@ A reference test suite (`chamber-conformance`) that any host or component can ru
 - Offline/merge and external‑edit reconciliation tests.
 
 A component/host that passes is "Chamber 0.1 conformant."
+
+### 14.2 Required test tiers
+
+Every capability ships **three suites**, mirroring the in-repo apps (`apps/*/test/{unit,integration,adversarial}.test.ts`). Commits follow the established convention `test(<area>): unit+integration+adversarial suites (N tests)`.
+
+| Tier | Scope | Backed by |
+|---|---|---|
+| **Unit** | Pure logic in isolation — parsers, schema validation, the predicate→prepared-statement compiler, HLC/merge functions — against an in-memory store. Fast, no I/O. | in-memory SQLite / pure functions |
+| **Integration** | One real front-end (CLI / HTTP / MCP) over a real backend, end-to-end. Round-trips and cross-layer behavior. | spawned server + temp dir/db |
+| **Adversarial** | Hostile inputs and invariant violations. **Every row of the §12 security table MUST map to ≥1 adversarial test**, and **every fixed bug MUST gain a labeled regression test** (see the existing `(regression)` tests in `nutrition/test/adversarial.test.ts`). | hostile fixtures + fuzz |
+
+A capability is untestable-by-design escape hatch is not allowed: if an invariant cannot be expressed as a test, it is not a normative invariant.
+
+### 14.3 Coverage matrix by capability
+
+Minimum required cases; hosts/components MAY add more. The **auth & relay** row anticipates the sync/replication model — a forthcoming normative section — and is listed here so its coverage is designed in from the start rather than retrofitted.
+
+| Capability | Unit | Integration | Adversarial |
+|---|---|---|---|
+| **doc-store** (§6) | path normalization; block parse↔serialize idempotence | read/write/append/remove round-trip on **dir and OPFS** backends; `write`/`append` diff to minimal block ops | traversal (`..`, leading `/`, `~`, drive letter, NUL, control chars, **symlink/junction escape**) → `forbidden`; non-`.md` → `forbidden`; invalid UTF-8 → `invalid-input`; oversize doc/vault, max docs, max blocks → `quota-exceeded` |
+| **data-store** (§7) | predicate→prepared-statement compiler **binds every value**; identifier allowlist rejects unknown table/column; typed `value` round-trip | insert Bronze → Silver/Gold **materialize**; `select`/`count` with projection/filter/order/limit/offset | injection via **every value and every identifier** stored verbatim or rejected, never executed (`'; DROP TABLE …`, `UNION SELECT`, `' OR '1'='1`); write to Silver/Gold → `forbidden`; DDL has no surface; numeric edges (`NaN`, `Infinity`, `1e309` overflow, `0`, negative); unicode verbatim; scan-cap / rows-returned / max rows / cols / cell-size → `quota-exceeded` |
+| **sync / CRDT** (§10, §7.5) | HLC monotonicity & total order; per-`(row,column)` LWW reduction; tombstone wins by HLC; op-log fold is deterministic | two replicas exchange ops → identical projection; offline edit → reconnect merges; external `.md` edit reconciled (§10.2) | **convergence fuzz**, N replicas, random concurrent streams → identical CRDT state **and** byte-identical `.md` **and** identical Gold views (§10.4); duplicated/reordered/replayed ops are idempotent; forged/malformed op rejected; **backwards wall-clock** does not corrupt order; large backlog |
+| **auth & relay** (recommendation §5) | token/JWT/keypair-challenge verification; `owner_id` resolution | push → pull restores state on a fresh replica; live WebSocket fan-out within one owner | **cross-tenant isolation (headline test): principal A cannot push to or pull from B's partition**; expired / forged / replayed token → reject; changeset tagged with the wrong `owner_id` → reject; **under E2EE the relay stores only ciphertext** — feed a known plaintext, assert stored bytes ≠ plaintext and no key is present server-side; per-owner quota/rate limits; malformed changeset → reject **and relay stays up** |
+| **host profiles** (§8) | — | golden "write-once, run-anywhere": identical op sequence on local / browser / edge → identical state + views | profile-specific backend faults (OPFS quota, R2 unavailability, DO contention) degrade safely |
+
+### 14.4 Adversarial agent review
+
+A required gate on **every PR that touches a capability**, run **before** human review. An automated red-team agent is given the diff, the spec section(s) it touches, the §12 risk table, and the §14.3 matrix, and is tasked to **actively break the invariants** — not to summarize the change.
+
+**Threat personas the agent MUST assume:** a malicious *component*, a malicious *peer replica*, a *curious/compromised relay*, and a *compromised device*.
+
+**Method.** For each in-scope invariant the agent proposes a concrete exploit, **writes it as a test**, and runs it. It specifically probes:
+- value/identifier binding bypasses in the data-store boundary (§7.2);
+- any path to ambient authority — FS, network, exec, or a capability used without its grant (fail-closed, §11);
+- cross-tenant / cross-vault / cross-dataset leakage (§12);
+- non-convergence or non-idempotent op handling (§10.4);
+- relay reading data it should not under E2EE;
+- quota/limit evasion (§6.3, §7.4).
+
+**Output.** A structured report, one row per attempt: `{ invariant, attack, result: held | broke | uncertain, repro_test, severity }`. Every `broke` or `uncertain` is filed as a `bd` issue linked `discovered-from` the PR. **A `broke` at severity ≥ high blocks merge.** Each confirmed break MUST land a labeled regression test (per §14.2) before the gate clears.
+
+The agent gate is **additive, not a substitute** for the human gate: it expands coverage and catches regressions cheaply, but its "held" verdicts are claims a human spot-checks (§14.5).
+
+### 14.5 Human review
+
+Some surfaces define the trust boundary; a change to any of them **MUST** receive human sign-off and **MUST NOT** rely on automated tests or the agent gate alone:
+
+- world imports and their gating (§5), and fail-closed instantiation (§11);
+- doc-store path rules (§6.2) and the `.md`-only rule (§6.1);
+- the string-free data-store boundary and identifier allowlist (§7.2), and transform validation (§7.3);
+- auth, `owner_id` resolution, and partition isolation (recommendation §5);
+- the E2EE codec and all key handling;
+- quota enforcement (§6.3, §7.4);
+- manifest grant parsing and extension attenuation (§11, §11.1).
+
+Rules:
+- **Two-person rule for P0 surfaces** (security / data-loss, per AGENTS.md priorities): the reviewer is not the author and is not solely an agent.
+- The human independently verifies what the agent cannot certify: **threat-model integrity** (did the change widen the reachable surface?), **crypto correctness** (no home-rolled primitives; keys never logged, never synced in plaintext), **spec↔code drift** (the code still satisfies the normative MUSTs), and the **credibility of the agent's `held` verdicts** (spot-check a sample of repros).
+- **Changes to this spec** are themselves trust-boundary changes: an agent MAY draft them, a human MUST ratify.
+
+### 14.6 Progression gates
+
+A phase is "done" only when its row's suites are green, the §14.4 agent report has no open finding ≥ high, and the §14.5 human sign-off for the listed surfaces is recorded.
+
+| Gate | Capability reached | Exit criteria (all required) |
+|---|---|---|
+| **G0 — Single-host correctness** | doc-store / data-store behind the typed API, one host | §14.3 doc-store + data-store unit & integration green; adversarial injection + path + quota suites green; human sign-off: path rules, string-free boundary |
+| **G1 — Structured-data safety** | full medallion + transforms | Silver/Gold materialization integration green; DDL/Silver-write `forbidden` adversarial green; transform-validation human sign-off (§7.3) |
+| **G2 — Local CRDT convergence** | op-log + projection, single user/multi-device | sync unit + integration green; **convergence fuzz** green (§10.4); idempotent-op + clock-skew adversarial green |
+| **G3 — Replication + auth isolation** | relay + sync engine + auth | push/pull integration green; **cross-tenant isolation adversarial green (blocking)**; token forgery/replay green; two-person human sign-off: auth + partition |
+| **G4 — Edge + E2EE + interop** | Worker/DO profile, zero-knowledge relay, JS↔Rust | host-profile golden tests green; relay-opacity adversarial green; **cross-impl convergence on shared golden vectors** green; human sign-off: E2EE codec + key handling |
+| **G5 — Extensions** | delegated, attenuated grants | attenuation-only + user-confirmed-slice adversarial green (§11.1); namespace-collision rejection green; human sign-off: delegation bounds |
+
+A host/component that clears G0–G2 is "Chamber 0.1 conformant" (per §14.1); G3–G5 are conformance levels for the synced, hosted, and extensible profiles respectively.
 
 ---
 
