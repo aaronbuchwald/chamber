@@ -9,10 +9,16 @@
 import { defineApp, z, arrayOf } from "../../../packages/appkit/src/index.js";
 import { openDb } from "./db.js";
 import { seedReferenceData } from "./seed.js";
-import { logMeal, getMealNutrition, listMeals } from "./operations.js";
+import { logMeal, getMealNutrition, listMeals, enrichMeal } from "./operations.js";
+import { usdaProvider } from "./nutrition_source.js";
+import { llmProvider } from "./llm_source.js";
 
 const db = openDb();
 seedReferenceData(db);
+
+// Which external source fills in nutrition for unknown components. USDA is the deterministic
+// default; set NUTRITION_PROVIDER=llm to decompose/estimate via an LLM instead (see llm_source.ts).
+const provider = process.env.NUTRITION_PROVIDER === "llm" ? llmProvider : usdaProvider;
 
 /** A component is "name:grams" (CLI-friendly) OR {component, qty_g} (JSON clients). */
 const component = z.union([
@@ -53,6 +59,13 @@ export const app = defineApp({
       summary: "List all logged meals, newest first.",
       input: z.object({}),
       handler: () => listMeals(db),
+    },
+    {
+      name: "enrich_meal",
+      summary:
+        "Look up nutrition for a meal's unknown components from an external source (USDA or LLM) and cache it locally.",
+      input: z.object({ meal_id: z.string().describe("Meal id returned by log_meal") }),
+      handler: ({ meal_id }) => enrichMeal(db, meal_id, provider),
     },
   ],
 });

@@ -1,113 +1,125 @@
 /**
- * seed.ts — Idempotent reference data for SILVER and GOLD layers.
+ * seed.ts — Idempotent reference ("classification") data for the SILVER and GOLD layers.
  *
- * Uses INSERT OR IGNORE so it is safe to call on every startup.
- * All values are bound parameters — no string interpolation into SQL.
+ * Phase 1 of the "loading the classification data" plan (docs/nutrition-meal-log-design.md §11):
+ * the reference data lives in declarative, version-controlled files under ./data/ instead of
+ * hardcoded arrays, loaded by a generic loader that:
+ *   1. reads the bundled seed files (JSON for nested/small, CSV for the flat nutrition matrix),
+ *   2. VALIDATES shape + referential integrity (fail loudly on a bad seed),
+ *   3. inserts in FK-dependency order inside one transaction.
+ *
+ * SAFETY: every value is a bound parameter to a prepared statement — no string interpolation.
+ * IDEMPOTENT: INSERT OR IGNORE means a re-run never duplicates or overwrites existing rows
+ * (so runtime-acquired data is safe). Source/precedence-ranked upserts arrive with the richer
+ * schema migration (see the design doc); they are intentionally out of scope here because the
+ * current schema has no `source` columns and tests pin the table shapes.
  */
 
 import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-interface Ingredient {
-  id: string;
-  canonical_name: string;
+const DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
+
+interface Ingredient { id: string; canonical_name: string; }
+interface ComponentMapping { component: string; ingredient_id: string; fraction: number; }
+interface Nutrient { id: string; name: string; kind: "macro" | "micro"; unit: string; }
+interface IngredientNutrient { ingredient_id: string; nutrient_id: string; amount_per_100g: number; }
+
+/** Read + parse a JSON seed file, failing loudly with the file name on a parse error. */
+function readJson<T>(file: string): T {
+  const full = path.join(DATA_DIR, file);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(full, "utf8");
+  } catch (e: any) {
+    throw new Error(`seed: cannot read ${file}: ${e?.message ?? e}`);
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e: any) {
+    throw new Error(`seed: ${file} is not valid JSON: ${e?.message ?? e}`);
+  }
 }
 
-interface ComponentMapping {
-  component: string;
-  ingredient_id: string;
-  fraction: number;
+/** Minimal CSV reader for the flat nutrition matrix. Values are ids/numbers (no quoting/commas),
+ *  so a header-driven split is sufficient; malformed rows fail loudly. */
+function readCsv(file: string, columns: string[]): Record<string, string>[] {
+  const full = path.join(DATA_DIR, file);
+  const text = fs.readFileSync(full, "utf8");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length === 0) throw new Error(`seed: ${file} is empty`);
+  const header = lines[0].split(",").map((h) => h.trim());
+  for (const col of columns) {
+    if (!header.includes(col)) throw new Error(`seed: ${file} missing column "${col}" (header: ${header.join(",")})`);
+  }
+  return lines.slice(1).map((line, i) => {
+    const cells = line.split(",");
+    if (cells.length !== header.length) {
+      throw new Error(`seed: ${file} line ${i + 2} has ${cells.length} cells, expected ${header.length}`);
+    }
+    const row: Record<string, string> = {};
+    header.forEach((h, j) => (row[h] = cells[j].trim()));
+    return row;
+  });
 }
 
-interface Nutrient {
-  id: string;
-  name: string;
-  kind: "macro" | "micro";
-  unit: string;
-}
+function nonEmpty(v: unknown): v is string { return typeof v === "string" && v.trim() !== ""; }
 
-interface IngredientNutrient {
-  ingredient_id: string;
-  nutrient_id: string;
-  amount_per_100g: number;
+/** Validate shape + referential integrity before touching the DB. Throws on the first problem. */
+function validate(
+  nutrients: Nutrient[],
+  ingredients: Ingredient[],
+  mappings: ComponentMapping[],
+  ingredientNutrients: IngredientNutrient[]
+): void {
+  const nutrientIds = new Set<string>();
+  for (const n of nutrients) {
+    if (!nonEmpty(n.id) || !nonEmpty(n.name) || !nonEmpty(n.unit)) throw new Error(`seed: bad nutrient row ${JSON.stringify(n)}`);
+    if (n.kind !== "macro" && n.kind !== "micro") throw new Error(`seed: nutrient ${n.id} has invalid kind "${n.kind}"`);
+    if (nutrientIds.has(n.id)) throw new Error(`seed: duplicate nutrient id "${n.id}"`);
+    nutrientIds.add(n.id);
+  }
+
+  const ingredientIds = new Set<string>();
+  for (const ing of ingredients) {
+    if (!nonEmpty(ing.id) || !nonEmpty(ing.canonical_name)) throw new Error(`seed: bad ingredient row ${JSON.stringify(ing)}`);
+    if (ingredientIds.has(ing.id)) throw new Error(`seed: duplicate ingredient id "${ing.id}"`);
+    ingredientIds.add(ing.id);
+  }
+
+  for (const m of mappings) {
+    if (!nonEmpty(m.component)) throw new Error(`seed: mapping with empty component ${JSON.stringify(m)}`);
+    if (!ingredientIds.has(m.ingredient_id)) throw new Error(`seed: mapping "${m.component}" references unknown ingredient_id "${m.ingredient_id}"`);
+    if (typeof m.fraction !== "number" || !(m.fraction > 0) || m.fraction > 1) throw new Error(`seed: mapping "${m.component}" has invalid fraction ${m.fraction} (expected 0 < f <= 1)`);
+  }
+
+  for (const inu of ingredientNutrients) {
+    if (!ingredientIds.has(inu.ingredient_id)) throw new Error(`seed: ingredient_nutrients references unknown ingredient_id "${inu.ingredient_id}"`);
+    if (!nutrientIds.has(inu.nutrient_id)) throw new Error(`seed: ingredient_nutrients references unknown nutrient_id "${inu.nutrient_id}"`);
+    if (!Number.isFinite(inu.amount_per_100g) || inu.amount_per_100g < 0) throw new Error(`seed: ${inu.ingredient_id}/${inu.nutrient_id} has invalid amount_per_100g ${inu.amount_per_100g}`);
+  }
 }
 
 export function seedReferenceData(db: Database.Database): void {
-  // ── SILVER: ingredients ───────────────────────────────────────────────────
-  const ingredients: Ingredient[] = [
-    { id: "ing_chicken",  canonical_name: "grilled chicken" },
-    { id: "ing_rice",     canonical_name: "brown rice" },
-    { id: "ing_olive",    canonical_name: "olive oil" },
-    { id: "ing_broccoli", canonical_name: "broccoli" },
-    { id: "ing_egg",      canonical_name: "egg" },
-    { id: "ing_oats",     canonical_name: "rolled oats" },
-  ];
+  // ── 1. load declarative seed files ────────────────────────────────────────
+  const nutrients = readJson<Nutrient[]>("nutrients.json");
+  const ingredients = readJson<Ingredient[]>("ingredients.json");
+  const mappings = readJson<ComponentMapping[]>("component_mappings.json");
+  const ingredientNutrients = readCsv("ingredient_nutrients.csv", ["ingredient_id", "nutrient_id", "amount_per_100g"]).map((r) => ({
+    ingredient_id: r.ingredient_id,
+    nutrient_id: r.nutrient_id,
+    amount_per_100g: Number(r.amount_per_100g),
+  }));
 
-  // ── SILVER: free-text component → ingredient mappings ────────────────────
-  // Covers the typical free-text strings a user would type.
-  // A component can map to multiple ingredients (e.g. a mixed dish); fraction
-  // represents the ingredient's weight share of that component.
-  const componentMappings: ComponentMapping[] = [
-    { component: "grilled chicken", ingredient_id: "ing_chicken",  fraction: 1.0 },
-    { component: "brown rice",      ingredient_id: "ing_rice",     fraction: 1.0 },
-    { component: "olive oil",       ingredient_id: "ing_olive",    fraction: 1.0 },
-    { component: "broccoli",        ingredient_id: "ing_broccoli", fraction: 1.0 },
-    { component: "egg",             ingredient_id: "ing_egg",      fraction: 1.0 },
-    { component: "scrambled eggs",  ingredient_id: "ing_egg",      fraction: 1.0 },
-    { component: "oatmeal",         ingredient_id: "ing_oats",     fraction: 1.0 },
-    { component: "rolled oats",     ingredient_id: "ing_oats",     fraction: 1.0 },
-  ];
+  // ── 2. validate shape + referential integrity (fail loudly) ───────────────
+  validate(nutrients, ingredients, mappings, ingredientNutrients);
 
-  // ── GOLD: nutrients ───────────────────────────────────────────────────────
-  const nutrients: Nutrient[] = [
-    { id: "nut_protein",  name: "Protein",    kind: "macro",  unit: "g" },
-    { id: "nut_carbs",    name: "Carbs",      kind: "macro",  unit: "g" },
-    { id: "nut_fat",      name: "Fat",        kind: "macro",  unit: "g" },
-    { id: "nut_vitc",     name: "Vitamin C",  kind: "micro",  unit: "mg" },
-    { id: "nut_iron",     name: "Iron",       kind: "micro",  unit: "mg" },
-  ];
-
-  // ── GOLD: ingredient_nutrients (per 100 g, approximate real values) ──────
-  const ingredientNutrients: IngredientNutrient[] = [
-    // Grilled chicken (~31g protein, 0g carbs, 3.6g fat, 0mg vit-C, 1.0mg iron per 100g)
-    { ingredient_id: "ing_chicken",  nutrient_id: "nut_protein", amount_per_100g: 31.0 },
-    { ingredient_id: "ing_chicken",  nutrient_id: "nut_carbs",   amount_per_100g:  0.0 },
-    { ingredient_id: "ing_chicken",  nutrient_id: "nut_fat",     amount_per_100g:  3.6 },
-    { ingredient_id: "ing_chicken",  nutrient_id: "nut_vitc",    amount_per_100g:  0.0 },
-    { ingredient_id: "ing_chicken",  nutrient_id: "nut_iron",    amount_per_100g:  1.0 },
-    // Brown rice (cooked: 2.6g protein, 23g carbs, 0.9g fat, 0mg vit-C, 0.5mg iron)
-    { ingredient_id: "ing_rice",     nutrient_id: "nut_protein", amount_per_100g:  2.6 },
-    { ingredient_id: "ing_rice",     nutrient_id: "nut_carbs",   amount_per_100g: 23.0 },
-    { ingredient_id: "ing_rice",     nutrient_id: "nut_fat",     amount_per_100g:  0.9 },
-    { ingredient_id: "ing_rice",     nutrient_id: "nut_vitc",    amount_per_100g:  0.0 },
-    { ingredient_id: "ing_rice",     nutrient_id: "nut_iron",    amount_per_100g:  0.5 },
-    // Olive oil (0g protein, 0g carbs, 100g fat, 0mg vit-C, 0.6mg iron)
-    { ingredient_id: "ing_olive",    nutrient_id: "nut_protein", amount_per_100g:  0.0 },
-    { ingredient_id: "ing_olive",    nutrient_id: "nut_carbs",   amount_per_100g:  0.0 },
-    { ingredient_id: "ing_olive",    nutrient_id: "nut_fat",     amount_per_100g: 100.0 },
-    { ingredient_id: "ing_olive",    nutrient_id: "nut_vitc",    amount_per_100g:  0.0 },
-    { ingredient_id: "ing_olive",    nutrient_id: "nut_iron",    amount_per_100g:  0.6 },
-    // Broccoli (2.8g protein, 6.6g carbs, 0.4g fat, 89.2mg vit-C, 0.7mg iron)
-    { ingredient_id: "ing_broccoli", nutrient_id: "nut_protein", amount_per_100g:  2.8 },
-    { ingredient_id: "ing_broccoli", nutrient_id: "nut_carbs",   amount_per_100g:  6.6 },
-    { ingredient_id: "ing_broccoli", nutrient_id: "nut_fat",     amount_per_100g:  0.4 },
-    { ingredient_id: "ing_broccoli", nutrient_id: "nut_vitc",    amount_per_100g: 89.2 },
-    { ingredient_id: "ing_broccoli", nutrient_id: "nut_iron",    amount_per_100g:  0.7 },
-    // Egg (13g protein, 1.1g carbs, 11g fat, 0mg vit-C, 1.8mg iron)
-    { ingredient_id: "ing_egg",      nutrient_id: "nut_protein", amount_per_100g: 13.0 },
-    { ingredient_id: "ing_egg",      nutrient_id: "nut_carbs",   amount_per_100g:  1.1 },
-    { ingredient_id: "ing_egg",      nutrient_id: "nut_fat",     amount_per_100g: 11.0 },
-    { ingredient_id: "ing_egg",      nutrient_id: "nut_vitc",    amount_per_100g:  0.0 },
-    { ingredient_id: "ing_egg",      nutrient_id: "nut_iron",    amount_per_100g:  1.8 },
-    // Rolled oats (17g protein, 66g carbs, 7g fat, 0mg vit-C, 4.7mg iron)
-    { ingredient_id: "ing_oats",     nutrient_id: "nut_protein", amount_per_100g: 17.0 },
-    { ingredient_id: "ing_oats",     nutrient_id: "nut_carbs",   amount_per_100g: 66.0 },
-    { ingredient_id: "ing_oats",     nutrient_id: "nut_fat",     amount_per_100g:  7.0 },
-    { ingredient_id: "ing_oats",     nutrient_id: "nut_vitc",    amount_per_100g:  0.0 },
-    { ingredient_id: "ing_oats",     nutrient_id: "nut_iron",    amount_per_100g:  4.7 },
-  ];
-
-  // All inserts use bound parameters — no user input here but the pattern is
-  // identical to runtime inserts, demonstrating the same safety property.
+  // ── 3. insert in FK-dependency order, idempotently, in one transaction ────
+  const insertNutrient = db.prepare(
+    `INSERT OR IGNORE INTO nutrients (id, name, kind, unit) VALUES (@id, @name, @kind, @unit)`
+  );
   const insertIngredient = db.prepare(
     `INSERT OR IGNORE INTO ingredients (id, canonical_name) VALUES (@id, @canonical_name)`
   );
@@ -115,21 +127,16 @@ export function seedReferenceData(db: Database.Database): void {
     `INSERT OR IGNORE INTO component_ingredients (component, ingredient_id, fraction)
      VALUES (@component, @ingredient_id, @fraction)`
   );
-  const insertNutrient = db.prepare(
-    `INSERT OR IGNORE INTO nutrients (id, name, kind, unit)
-     VALUES (@id, @name, @kind, @unit)`
-  );
   const insertIngNut = db.prepare(
     `INSERT OR IGNORE INTO ingredient_nutrients (ingredient_id, nutrient_id, amount_per_100g)
      VALUES (@ingredient_id, @nutrient_id, @amount_per_100g)`
   );
 
-  // Run all seed inserts in a single transaction for speed + atomicity
   const seedAll = db.transaction(() => {
-    for (const ing of ingredients)        insertIngredient.run(ing);
-    for (const cm  of componentMappings)  insertMapping.run(cm);
-    for (const nut of nutrients)          insertNutrient.run(nut);
-    for (const inu of ingredientNutrients) insertIngNut.run(inu);
+    for (const nut of nutrients)            insertNutrient.run(nut);
+    for (const ing of ingredients)          insertIngredient.run(ing);
+    for (const cm of mappings)              insertMapping.run(cm);
+    for (const inu of ingredientNutrients)  insertIngNut.run(inu);
   });
 
   seedAll();

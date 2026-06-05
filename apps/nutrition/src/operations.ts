@@ -9,6 +9,7 @@
 
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
+import type { NutritionProvider } from "./nutrition_source.js";
 
 export interface ComponentSpec {
   component: string;
@@ -95,4 +96,86 @@ export function listMeals(db: Database.Database): MealRow[] {
     `SELECT id, name, eaten_at FROM meals ORDER BY eaten_at DESC`
   );
   return stmt.all();
+}
+
+export interface EnrichOutcome {
+  meal_id: string;
+  enriched: { component: string; ingredient: string }[]; // newly fetched + cached
+  cached: string[];                                       // already resolvable, skipped
+  not_found: string[];                                    // provider had no data
+}
+
+/**
+ * enrichMeal — the lazy, online "fill out specifics" path.
+ *
+ * For each distinct component of a meal that does NOT already resolve to nutrition locally,
+ * ask the provider (USDA, an LLM, …) for per-100g data and cache it into the SAME silver/gold
+ * tables (ingredients + component_ingredients + ingredient_nutrients). After this runs,
+ * getMealNutrition reflects the new data, and any future meal using that component string
+ * resolves offline — no second lookup ("resolve once, replay forever").
+ *
+ * Network I/O happens OUTSIDE the DB transaction; each component's writes are their own small
+ * idempotent transaction, so a mid-batch failure leaves already-fetched components cached.
+ */
+export async function enrichMeal(
+  db: Database.Database,
+  mealId: string,
+  provider: NutritionProvider
+): Promise<EnrichOutcome> {
+  const components = (
+    db
+      .prepare<{ meal_id: string }, { component: string }>(
+        `SELECT DISTINCT component FROM meal_components WHERE meal_id = @meal_id`
+      )
+      .all({ meal_id: mealId })
+  ).map((r) => r.component);
+
+  // A component is already resolvable if its mapping reaches at least one nutrient row.
+  const resolvable = db.prepare<{ component: string }, { x: number }>(
+    `SELECT 1 AS x FROM component_ingredients ci
+     JOIN ingredient_nutrients inu ON inu.ingredient_id = ci.ingredient_id
+     WHERE ci.component = @component LIMIT 1`
+  );
+
+  const insertIngredient = db.prepare(
+    `INSERT OR IGNORE INTO ingredients (id, canonical_name) VALUES (@id, @canonical_name)`
+  );
+  const insertMapping = db.prepare(
+    `INSERT OR IGNORE INTO component_ingredients (component, ingredient_id, fraction)
+     VALUES (@component, @ingredient_id, 1.0)`
+  );
+  const insertIngNut = db.prepare(
+    `INSERT OR IGNORE INTO ingredient_nutrients (ingredient_id, nutrient_id, amount_per_100g)
+     VALUES (@ingredient_id, @nutrient_id, @amount_per_100g)`
+  );
+
+  const outcome: EnrichOutcome = { meal_id: mealId, enriched: [], cached: [], not_found: [] };
+
+  for (const component of components) {
+    if (resolvable.get({ component })) {
+      outcome.cached.push(component);
+      continue;
+    }
+    const result = await provider.lookup(component); // network — outside any transaction
+    if (!result) {
+      outcome.not_found.push(component);
+      continue;
+    }
+    const ingredientId = `ing_ext_${result.external_id}`;
+    const cache = db.transaction(() => {
+      insertIngredient.run({ id: ingredientId, canonical_name: result.canonical_name });
+      insertMapping.run({ component, ingredient_id: ingredientId });
+      for (const n of result.nutrients) {
+        insertIngNut.run({
+          ingredient_id: ingredientId,
+          nutrient_id: n.nutrient_id,
+          amount_per_100g: n.amount_per_100g,
+        });
+      }
+    });
+    cache();
+    outcome.enriched.push({ component, ingredient: result.canonical_name });
+  }
+
+  return outcome;
 }
