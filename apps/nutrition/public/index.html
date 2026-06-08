@@ -90,10 +90,11 @@
     .form-inner { padding: 20px; }
     .form-inner h2 { margin: 0 0 14px; font-size: 17px; }
     label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
-    input {
+    input, textarea {
       width: 100%; font: inherit; padding: 9px 10px; border-radius: 8px;
       border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
     }
+    textarea { resize: vertical; min-height: 64px; }
     .comp-row { display: flex; gap: 8px; margin-top: 8px; }
     .comp-row input.cname { flex: 1; }
     .comp-row input.cqty { width: 96px; }
@@ -121,12 +122,9 @@
   <dialog id="logDialog">
     <form method="dialog" class="form-inner" id="logForm">
       <h2>Log a meal</h2>
-      <label for="mealName">Meal name</label>
-      <input id="mealName" name="name" placeholder="Chicken burrito bowl" required />
-      <label>Components</label>
-      <div id="components"></div>
-      <div class="hint">Known components: grilled chicken, brown rice, olive oil, broccoli, egg, scrambled eggs, oatmeal, rolled oats. Unknown ones still log but contribute no nutrients.</div>
-      <button type="button" id="addComp" style="margin-top:10px">+ Add component</button>
+      <label for="mealDesc">What did you eat?</label>
+      <textarea id="mealDesc" name="description" rows="3" placeholder="sausage egg and cheese everything bagel" required></textarea>
+      <div class="hint">Describe your meal in plain language. The components and their portions are estimated automatically, then nutrition is looked up for each.</div>
       <div class="form-actions">
         <button type="button" id="cancelBtn">Cancel</button>
         <button type="submit" class="primary" id="saveBtn">Log meal</button>
@@ -198,13 +196,13 @@
       const body = card.querySelector(".meal-body");
       let loaded = false;
 
-      // (Re-)render this meal's nutrition into the body, with a Fetch-nutrition action.
+      // Render this meal's nutrition into the body. log_meal resolves nutrition end-to-end at
+      // log time (estimate components → look up each), so there's no separate fetch step.
       async function renderNutrition() {
         try {
           const rows = await call("nutrition_for", { meal_id: m.id });
           body.innerHTML = "";
           body.appendChild(nutritionTable(rows));
-          body.appendChild(fetchFooter(m.id, rows, renderNutrition));
         } catch (e) {
           loaded = false;
           body.innerHTML = `<div class="err">${e.message}</div>`;
@@ -220,48 +218,13 @@
       return card;
     }
 
-    // Footer with a "Fetch nutrition" button. enrich_meal looks up any unknown
-    // components from an external source (USDA/LLM), caches them, then we re-render.
-    function fetchFooter(mealId, rows, rerender) {
-      const footer = document.createElement("div");
-      footer.className = "fetch-row";
-      const btn = document.createElement("button");
-      btn.textContent = rows.length ? "Fetch missing nutrition" : "Fetch nutrition";
-      const status = document.createElement("span");
-      status.className = "fetch-status";
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        status.textContent = "Looking up external sources…";
-        status.classList.remove("err-text");
-        try {
-          const outcome = await call("enrich_meal", { meal_id: mealId });
-          const got = outcome.enriched?.length ?? 0;
-          const missing = outcome.not_found?.length ?? 0;
-          await rerender();
-          if (got) {
-            // rerender() rebuilt the footer; nothing more to show here.
-          } else if (missing) {
-            // The footer was rebuilt; surface the miss via the page-level error banner.
-            showError(`No external data found for: ${outcome.not_found.join(", ")}.`);
-          }
-        } catch (e) {
-          status.textContent = "Lookup failed: " + e.message;
-          status.classList.add("err-text");
-          btn.disabled = false;
-        }
-      });
-      footer.append(btn, status);
-      return footer;
-    }
-
     function nutritionTable(rows) {
       const frag = document.createDocumentFragment();
       if (!rows.length) {
         const d = document.createElement("div");
         d.className = "empty";
         d.innerHTML =
-          "No nutrient data yet — these components aren’t in the local reference data.<br>" +
-          "Use <strong>Fetch nutrition</strong> below to look them up from an external source and cache them.";
+          "No nutrient data for this meal — its components couldn’t be resolved to any nutrition source.";
         frag.appendChild(d);
         return frag;
       }
@@ -291,60 +254,32 @@
 
     // ── log-meal dialog ───────────────────────────────────────────────────
     const dialog = el("logDialog");
-    const componentsEl = el("components");
-
-    function addComponentRow(name = "", qty = "") {
-      const row = document.createElement("div");
-      row.className = "comp-row";
-      row.innerHTML = `
-        <input class="cname" placeholder="grilled chicken" />
-        <input class="cqty" type="number" min="0" step="any" placeholder="grams" />
-        <button type="button" class="rm">✕</button>`;
-      row.querySelector(".cname").value = name;
-      row.querySelector(".cqty").value = qty;
-      row.querySelector(".rm").addEventListener("click", () => {
-        if (componentsEl.children.length > 1) row.remove();
-      });
-      componentsEl.appendChild(row);
-    }
 
     el("logBtn").addEventListener("click", () => {
-      el("mealName").value = "";
-      componentsEl.innerHTML = "";
-      addComponentRow();
+      el("mealDesc").value = "";
       dialog.showModal();
     });
-    el("addComp").addEventListener("click", () => addComponentRow());
     el("cancelBtn").addEventListener("click", () => dialog.close());
 
     el("logForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const name = el("mealName").value.trim();
-      const components = [];
-      for (const row of componentsEl.querySelectorAll(".comp-row")) {
-        const component = row.querySelector(".cname").value.trim();
-        const qty_g = parseFloat(row.querySelector(".cqty").value);
-        if (!component) continue;
-        if (!Number.isFinite(qty_g) || qty_g <= 0) {
-          showError(`Component “${component}” needs a positive gram amount.`);
-          return;
-        }
-        components.push({ component, qty_g });
-      }
-      if (!name || !components.length) {
-        showError("A meal needs a name and at least one component.");
+      const description = el("mealDesc").value.trim();
+      if (!description) {
+        showError("Describe what you ate.");
         return;
       }
       const saveBtn = el("saveBtn");
       saveBtn.disabled = true;
+      saveBtn.textContent = "Estimating…";
       try {
-        await call("log_meal", { name, components });
+        await call("log_meal", { description });
         dialog.close();
         await loadMeals();
       } catch (err) {
         showError("Could not log meal: " + err.message);
       } finally {
         saveBtn.disabled = false;
+        saveBtn.textContent = "Log meal";
       }
     });
 

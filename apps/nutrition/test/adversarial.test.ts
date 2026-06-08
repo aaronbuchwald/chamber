@@ -680,16 +680,23 @@ describe("unicode and special characters in names", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("schema validation — top-level fields", () => {
-  it("rejects log_meal with missing name field", async () => {
+  it("accepts log_meal with a description and no components (parser estimates them)", async () => {
+    // New contract: a free-text description alone is valid input — name and components are
+    // optional, and the configured parser fills in the components/portions at log time.
     const parsed = logMealOp.input.safeParse({
-      components: ["grilled chicken:100"],
+      description: "sausage egg and cheese everything bagel",
     });
-    assert.ok(!parsed.success, "Missing 'name' field should be rejected");
+    assert.ok(parsed.success, "description-only log_meal should parse (name/components optional)");
   });
 
-  it("rejects log_meal with missing components field (undefined)", async () => {
-    const parsed = logMealOp.input.safeParse({ name: "No components" });
-    assert.ok(!parsed.success, "Missing 'components' field (undefined) should be rejected");
+  it("rejects log_meal with neither description nor components", async () => {
+    // The schema allows all fields to be absent; the "must give one or the other" invariant is
+    // enforced in the handler, which rejects before any parser/DB work (no network in this path).
+    await assert.rejects(
+      () => Promise.resolve(logMealOp.handler({})),
+      /description|components/i,
+      "log_meal with neither description nor components should be rejected"
+    );
   });
 
   it("rejects log_meal with null components", async () => {

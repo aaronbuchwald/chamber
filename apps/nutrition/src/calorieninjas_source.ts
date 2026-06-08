@@ -16,7 +16,7 @@ import type { NutritionProvider, ProviderResult } from "./nutrition_source.js";
 const CALORIENINJAS_URL = "https://api.calorieninjas.com/v1/nutrition";
 
 /** CalorieNinjas reports values for `serving_size_g`; the rest of the app stores per-100g. */
-interface CalorieNinjasItem {
+export interface CalorieNinjasItem {
   name: string;
   serving_size_g: number;
   protein_g: number;
@@ -29,22 +29,31 @@ function slug(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
+/**
+ * Raw CalorieNinjas query: returns every item the API parsed out of the free-text query (it splits
+ * a multi-food string like "sausage egg and cheese bagel" into one item per food). Shared by the
+ * single-food nutrition provider (which takes item[0]) and the meal parser (which takes them all).
+ */
+export async function fetchCalorieNinjasItems(query: string): Promise<CalorieNinjasItem[]> {
+  const apiKey = process.env.CALORIENINJAS_API_KEY;
+  if (!apiKey) {
+    throw new Error("CalorieNinjas requires CALORIENINJAS_API_KEY to be set.");
+  }
+
+  const url = new URL(CALORIENINJAS_URL);
+  url.searchParams.set("query", query);
+
+  const resp = await fetch(url, { headers: { "X-Api-Key": apiKey } });
+  if (!resp.ok) {
+    throw new Error(`CalorieNinjas lookup failed (${resp.status}) for "${query}"`);
+  }
+  const data = (await resp.json()) as { items?: CalorieNinjasItem[] };
+  return data.items ?? [];
+}
+
 export const calorieNinjasProvider: NutritionProvider = {
   async lookup(query: string): Promise<ProviderResult | null> {
-    const apiKey = process.env.CALORIENINJAS_API_KEY;
-    if (!apiKey) {
-      throw new Error("NUTRITION_PROVIDER=calorieninjas requires CALORIENINJAS_API_KEY to be set.");
-    }
-
-    const url = new URL(CALORIENINJAS_URL);
-    url.searchParams.set("query", query);
-
-    const resp = await fetch(url, { headers: { "X-Api-Key": apiKey } });
-    if (!resp.ok) {
-      throw new Error(`CalorieNinjas lookup failed (${resp.status}) for "${query}"`);
-    }
-    const data = (await resp.json()) as { items?: CalorieNinjasItem[] };
-    const item = data.items?.[0];
+    const item = (await fetchCalorieNinjasItems(query))[0];
     if (!item) return null;
 
     // Normalize the returned serving to per-100g (CalorieNinjas defaults to 100g for a bare name).
