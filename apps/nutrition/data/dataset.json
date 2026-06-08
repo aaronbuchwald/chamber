@@ -1,0 +1,5 @@
+{
+  "dataset_version": 1,
+  "ref_revision": 1,
+  "description": "Bundled offline seed for the nutrition classifier. Mirrors the current schema (ingredients / component_ingredients / nutrients / ingredient_nutrients). See docs/nutrition-meal-log-design.md §11 for how this evolves (templates, aliases, source/precedence)."
+}

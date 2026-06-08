@@ -1,0 +1,8 @@
+[
+  { "id": "ing_chicken",  "canonical_name": "grilled chicken" },
+  { "id": "ing_rice",     "canonical_name": "brown rice" },
+  { "id": "ing_olive",    "canonical_name": "olive oil" },
+  { "id": "ing_broccoli", "canonical_name": "broccoli" },
+  { "id": "ing_egg",      "canonical_name": "egg" },
+  { "id": "ing_oats",     "canonical_name": "rolled oats" }
+]

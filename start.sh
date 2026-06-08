@@ -81,6 +81,7 @@ sleep 4
 
 echo
 echo "Chamber is up. MCP endpoint:  http://localhost:3000/mcp"
+echo "Nutrition UI:  http://localhost:8080/"
 echo "Backends:  nutrition :8080  notes :8081  todo :8082"
 echo "Logs:      /tmp/chamber-{nutrition,notes,todo,gateway}.log"
 echo

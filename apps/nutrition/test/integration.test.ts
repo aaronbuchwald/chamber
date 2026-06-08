@@ -272,7 +272,7 @@ describe("HTTP integration", () => {
 // ── MCP integration tests ─────────────────────────────────────────────────────
 
 describe("MCP integration", () => {
-  it("tools/list returns 3 tools and log_meal works end-to-end", async () => {
+  it("tools/list returns the tools and log_meal works end-to-end", async () => {
     const tempDir = makeTempDir();
     try {
       // Dynamic import of MCP SDK client (ESM)
@@ -297,7 +297,8 @@ describe("MCP integration", () => {
         assert.ok(toolNames.includes("log_meal"), `log_meal missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("nutrition_for"), `nutrition_for missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("list_meals"), `list_meals missing from tools: ${JSON.stringify(toolNames)}`);
-        assert.equal(toolNames.length, 3, `Expected 3 tools, got ${toolNames.length}`);
+        assert.ok(toolNames.includes("enrich_meal"), `enrich_meal missing from tools: ${JSON.stringify(toolNames)}`);
+        assert.equal(toolNames.length, 4, `Expected 4 tools, got ${toolNames.length}`);
 
         // 2. Call log_meal
         const logResult = await client.callTool({

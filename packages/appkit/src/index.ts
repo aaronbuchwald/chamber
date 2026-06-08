@@ -15,6 +15,8 @@
  * init() -> list<tool-descriptor>, and call-tool dispatch (see SPEC.md §5).
  */
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -180,16 +182,61 @@ export function openApiDoc(app: AppDef): unknown {
   return { openapi: "3.1.0", info: { title: app.name, version: app.version }, paths };
 }
 
-export function serveHttp(app: AppDef, port = Number(process.env.PORT) || 8787): http.Server {
+/** Minimal extension-based content types for the optional static UI. */
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+};
+
+/** Serve a file from `staticDir` if the request path safely resolves inside it.
+ *  Returns true if the request was handled (file sent or 404 written). */
+function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, staticDir: string, pathname: string): boolean {
+  const rel = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const resolved = path.resolve(staticDir, rel);
+  // Path-traversal guard: the resolved path must stay within staticDir.
+  if (resolved !== staticDir && !resolved.startsWith(staticDir + path.sep)) {
+    sendJson(res, 403, { error: "Forbidden" });
+    return true;
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return false;
+  const type = STATIC_CONTENT_TYPES[path.extname(resolved).toLowerCase()] ?? "application/octet-stream";
+  res.writeHead(200, { "content-type": type });
+  fs.createReadStream(resolved).pipe(res);
+  return true;
+}
+
+export interface ServeHttpOptions {
+  /** If set, GET requests serve files from this dir (UI), and app metadata moves to GET /info. */
+  staticDir?: string;
+}
+
+export function serveHttp(
+  app: AppDef,
+  port = Number(process.env.PORT) || 8787,
+  opts: ServeHttpOptions = {}
+): http.Server {
+  const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : undefined;
+  const metadata = () => ({
+    name: app.name,
+    version: app.version,
+    operations: app.operations.map((o) => ({ name: o.name, summary: o.summary })),
+  });
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/openapi.json") return sendJson(res, 200, openApiDoc(app));
-    if (req.method === "GET" && url.pathname === "/") {
-      return sendJson(res, 200, {
-        name: app.name,
-        version: app.version,
-        operations: app.operations.map((o) => ({ name: o.name, summary: o.summary })),
-      });
+    if (req.method === "GET") {
+      // With a static UI, metadata lives at /info and GET serves the UI; otherwise / is metadata.
+      if (staticDir) {
+        if (url.pathname === "/info") return sendJson(res, 200, metadata());
+        if (serveStatic(req, res, staticDir, url.pathname)) return;
+      } else if (url.pathname === "/") {
+        return sendJson(res, 200, metadata());
+      }
     }
     if (req.method === "POST") {
       const op = app.operations.find((o) => url.pathname === `/${o.name}`);
