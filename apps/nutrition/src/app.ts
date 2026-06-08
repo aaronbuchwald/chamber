@@ -64,8 +64,14 @@ export const app = defineApp({
         components: arrayOf(component)
           .optional()
           .describe('Optional explicit components as "name:grams" or {component, qty_g}; skips estimation when given.'),
+        eaten_at: z
+          .number()
+          .finite()
+          .positive()
+          .optional()
+          .describe("When the meal was eaten, as a Unix timestamp in ms. Defaults to now."),
       }),
-      handler: async ({ description, name, components }) => {
+      handler: async ({ description, name, components, eaten_at }) => {
         let comps: ComponentSpec[] = components ?? [];
         if (comps.length === 0) {
           if (!description) throw new Error("Provide a `description` (or explicit `components`).");
@@ -74,7 +80,7 @@ export const app = defineApp({
         }
         const mealName = name ?? description;
         if (!mealName) throw new Error("Provide a `name` or a `description`.");
-        return { meal_id: await logMeal(db, mealName, comps, strategy) };
+        return { meal_id: await logMeal(db, mealName, comps, strategy, eaten_at) };
       },
     },
     {

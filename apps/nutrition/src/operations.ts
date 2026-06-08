@@ -50,10 +50,11 @@ export async function logMeal(
   db: Database.Database,
   name: string,
   components: ComponentSpec[],
-  strategy: NutritionProvider = localProvider
+  strategy: NutritionProvider = localProvider,
+  eatenAt: number = Date.now()
 ): Promise<string> {
   const mealId = randomUUID();
-  const now = Date.now();
+  const now = eatenAt;
 
   // Parameterized prepared statements — Chamber's structural injection-safety guarantee
   const insertMeal = db.prepare(

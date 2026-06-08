@@ -34,7 +34,15 @@
     .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
     main { max-width: 880px; margin: 0 auto; padding: 12px 24px 60px; }
 
-    .toolbar { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+    .date-nav { display: flex; gap: 6px; align-items: center; }
+    .date-nav button { padding: 8px 12px; line-height: 1; }
+    #datePicker {
+      width: auto; font: inherit; padding: 7px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+      color-scheme: dark;
+    }
+    #datePicker.not-today { border-color: var(--accent); }
     button {
       font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border);
       background: var(--panel-2); color: var(--text); padding: 8px 14px;
@@ -111,6 +119,12 @@
   <main>
     <div class="toolbar">
       <button class="primary" id="logBtn">+ Log a meal</button>
+      <div class="date-nav">
+        <button id="prevDay" title="Previous day" aria-label="Previous day">‹</button>
+        <input type="date" id="datePicker" />
+        <button id="nextDay" title="Next day" aria-label="Next day">›</button>
+        <button id="todayBtn">Today</button>
+      </div>
       <button id="refreshBtn">Refresh</button>
       <span class="spacer"></span>
       <span class="sub" id="count"></span>
@@ -121,7 +135,7 @@
 
   <dialog id="logDialog">
     <form method="dialog" class="form-inner" id="logForm">
-      <h2>Log a meal</h2>
+      <h2>Log a meal · <span id="logDayLabel">Today</span></h2>
       <label for="mealDesc">What did you eat?</label>
       <textarea id="mealDesc" name="description" rows="3" placeholder="sausage egg and cheese everything bagel" required></textarea>
       <div class="hint">Describe your meal in plain language. The components and their portions are estimated automatically, then nutrition is looked up for each.</div>
@@ -146,8 +160,36 @@
     }
 
     const fmtTime = (ms) =>
-      new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      new Date(ms).toLocaleTimeString(undefined, { timeStyle: "short" });
     const round = (n) => (Math.round(n * 10) / 10).toLocaleString();
+
+    // ── day selection (local-calendar based) ──────────────────────────────
+    // Meals are filtered/written by *local* calendar day, so all date math builds
+    // local Date objects (never `new Date("YYYY-MM-DD")`, which parses as UTC).
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const localDateStr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    const todayStr = () => localDateStr(new Date());
+    const msToDateStr = (ms) => localDateStr(new Date(ms));
+    function shiftDay(dateStr, delta) {
+      const [y, m, d] = dateStr.split("-").map(Number);
+      return localDateStr(new Date(y, m - 1, d + delta));
+    }
+    function fmtDay(dateStr) {
+      const [y, m, d] = dateStr.split("-").map(Number);
+      const date = new Date(y, m - 1, d);
+      if (dateStr === todayStr()) return "Today";
+      if (dateStr === shiftDay(todayStr(), -1)) return "Yesterday";
+      return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    }
+    // The instant to stamp a meal logged on the selected day: now if today, else local noon
+    // (mid-day avoids landing on the wrong calendar day across timezones).
+    function eatenAtForDay(dateStr) {
+      if (dateStr === todayStr()) return Date.now();
+      const [y, m, d] = dateStr.split("-").map(Number);
+      return new Date(y, m - 1, d, 12, 0, 0, 0).getTime();
+    }
+
+    let selectedDate = todayStr();
 
     const el = (id) => document.getElementById(id);
     const mealsEl = el("meals");
@@ -159,9 +201,17 @@
     }
     function clearError() { errEl.hidden = true; }
 
-    // ── render the meal list ──────────────────────────────────────────────
+    // Keep the date picker in sync with the selected day (value + "viewing a past/future day" cue).
+    function syncDatePicker() {
+      const picker = el("datePicker");
+      picker.value = selectedDate;
+      picker.classList.toggle("not-today", selectedDate !== todayStr());
+    }
+
+    // ── render the meal list for the selected day ─────────────────────────
     async function loadMeals() {
       clearError();
+      syncDatePicker();
       mealsEl.innerHTML = '<div class="loading">Loading meals…</div>';
       let meals;
       try {
@@ -171,13 +221,16 @@
         showError("Could not load meals: " + e.message);
         return;
       }
-      el("count").textContent = meals.length ? `${meals.length} meal${meals.length === 1 ? "" : "s"}` : "";
-      if (!meals.length) {
-        mealsEl.innerHTML = '<div class="empty">No meals logged yet. Click “+ Log a meal”.</div>';
+      // list_meals returns every meal; show only those eaten on the selected local day.
+      const dayMeals = meals.filter((m) => msToDateStr(m.eaten_at) === selectedDate);
+      const n = dayMeals.length;
+      el("count").textContent = `${n} meal${n === 1 ? "" : "s"} · ${fmtDay(selectedDate)}`;
+      if (!n) {
+        mealsEl.innerHTML = `<div class="empty">No meals logged for <strong>${fmtDay(selectedDate)}</strong>. Click “+ Log a meal”.</div>`;
         return;
       }
       mealsEl.innerHTML = "";
-      for (const m of meals) mealsEl.appendChild(mealCard(m));
+      for (const m of dayMeals) mealsEl.appendChild(mealCard(m));
     }
 
     function mealCard(m) {
@@ -252,11 +305,23 @@
       return frag;
     }
 
+    // ── date navigation ───────────────────────────────────────────────────
+    function setSelectedDate(dateStr) {
+      selectedDate = dateStr || todayStr();
+      loadMeals();
+    }
+    el("prevDay").addEventListener("click", () => setSelectedDate(shiftDay(selectedDate, -1)));
+    el("nextDay").addEventListener("click", () => setSelectedDate(shiftDay(selectedDate, 1)));
+    el("todayBtn").addEventListener("click", () => setSelectedDate(todayStr()));
+    el("datePicker").addEventListener("change", (e) => setSelectedDate(e.target.value));
+
     // ── log-meal dialog ───────────────────────────────────────────────────
     const dialog = el("logDialog");
 
     el("logBtn").addEventListener("click", () => {
       el("mealDesc").value = "";
+      // Reflect which day this meal will be logged to (the day currently being viewed).
+      el("logDayLabel").textContent = fmtDay(selectedDate);
       dialog.showModal();
     });
     el("cancelBtn").addEventListener("click", () => dialog.close());
@@ -272,7 +337,7 @@
       saveBtn.disabled = true;
       saveBtn.textContent = "Estimating…";
       try {
-        await call("log_meal", { description });
+        await call("log_meal", { description, eaten_at: eatenAtForDay(selectedDate) });
         dialog.close();
         await loadMeals();
       } catch (err) {
