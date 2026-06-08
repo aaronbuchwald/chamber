@@ -8,14 +8,16 @@
  *
  * The set of strategies is the set of options that previously lived behind the separate
  * `enrich_meal` step:
- *   - "local" : no external lookup — rely only on the bundled/seeded reference data (offline).
- *   - "usda"  : USDA FoodData Central lookup (the default).
- *   - "llm"   : LLM estimation for arbitrary dishes.
+ *   - "local"         : no external lookup — rely only on the bundled/seeded reference data (offline).
+ *   - "usda"          : USDA FoodData Central lookup (the default).
+ *   - "calorieninjas" : CalorieNinjas lookup (macros only; vit C / iron filled as 0).
+ *   - "llm"           : LLM estimation for arbitrary dishes.
  */
 
 import type { NutritionProvider } from "./nutrition_source.js";
 import { usdaProvider } from "./nutrition_source.js";
 import { llmProvider } from "./llm_source.js";
+import { calorieNinjasProvider } from "./calorieninjas_source.js";
 
 /**
  * The offline strategy: resolves nothing externally, so components fall back to whatever the
@@ -27,12 +29,13 @@ export const localProvider: NutritionProvider = {
   },
 };
 
-export type StrategyName = "local" | "usda" | "llm";
+export type StrategyName = "local" | "usda" | "calorieninjas" | "llm";
 
 /** The registry of available strategies (the previously-separate enrichment options). */
 export const strategies: Record<StrategyName, NutritionProvider> = {
   local: localProvider,
   usda: usdaProvider,
+  calorieninjas: calorieNinjasProvider,
   llm: llmProvider,
 };
 
