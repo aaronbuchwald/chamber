@@ -1,12 +1,12 @@
 /**
  * llm_source.ts — an LLM-backed NutritionProvider (alternative to the USDA lookup).
  *
- * Same `NutritionProvider` interface as nutrition_source.ts, so it drops straight into the
- * `enrich_meal` operation — set NUTRITION_PROVIDER=llm to use it. Where USDA does an exact
- * database lookup, the LLM *estimates* per-100g nutrition for an arbitrary free-text food
+ * Same `NutritionProvider` interface as nutrition_source.ts, so it drops straight in as a
+ * log_meal strategy — set NUTRITION_PROVIDER=llm to use it (see strategies.ts). Where USDA does
+ * an exact database lookup, the LLM *estimates* per-100g nutrition for an arbitrary free-text food
  * (including dishes USDA may not index cleanly), returning structured JSON.
  *
- * Determinism note: the LLM is nondeterministic, but enrichMeal caches the result into the
+ * Determinism note: the LLM is nondeterministic, but logMeal caches the result into the
  * silver/gold tables keyed by a stable id derived from the food name. So the model is consulted
  * once per novel component; every future log of that component replays the cached value offline
  * ("resolve once, replay forever" — see docs/nutrition-meal-log-design.md §4).

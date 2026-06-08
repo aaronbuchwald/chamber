@@ -87,7 +87,7 @@ function freshDb(): Database.Database {
 
 // We import at top level — tsx will handle TS resolution for us.
 import { seedReferenceData } from "../src/seed.js";
-import { logMeal, getMealNutrition, listMeals, enrichMeal } from "../src/operations.js";
+import { logMeal, getMealNutrition, listMeals } from "../src/operations.js";
 import type { NutritionProvider, ProviderResult } from "../src/nutrition_source.js";
 import { app } from "../src/app.js";
 import { z } from "../../../packages/appkit/src/index.js";
@@ -95,11 +95,11 @@ import { z } from "../../../packages/appkit/src/index.js";
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("logMeal", () => {
-  it("writes Bronze rows and returns a UUID", () => {
+  it("writes Bronze rows and returns a UUID", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
-    const id = logMeal(db, "Chicken dinner", [{ component: "grilled chicken", qty_g: 150 }]);
+    const id = await logMeal(db, "Chicken dinner", [{ component: "grilled chicken", qty_g: 150 }]);
 
     assert.match(id, /^[0-9a-f-]{36}$/, "meal_id should be a UUID");
 
@@ -115,11 +115,11 @@ describe("logMeal", () => {
 });
 
 describe("getMealNutrition", () => {
-  it("returns Gold-view rows with macros before micros", () => {
+  it("returns Gold-view rows with macros before micros", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
-    const id = logMeal(db, "Grilled chicken", [{ component: "grilled chicken", qty_g: 150 }]);
+    const id = await logMeal(db, "Grilled chicken", [{ component: "grilled chicken", qty_g: 150 }]);
     const rows = getMealNutrition(db, id);
 
     // Should have 5 nutrients (protein, carbs, fat, vit-c, iron)
@@ -136,13 +136,13 @@ describe("getMealNutrition", () => {
     assert.ok(lastMacroIdx < firstMicroIdx, "all macros should come before any micro");
   });
 
-  it("computes a concrete value: 150g grilled chicken → Protein ≈ 46.5g", () => {
+  it("computes a concrete value: 150g grilled chicken → Protein ≈ 46.5g", async () => {
     // Per seed.ts: grilled chicken has 31.0g protein per 100g
     // 150g * 31.0 / 100 = 46.5g
     const db = freshDb();
     seedReferenceData(db);
 
-    const id = logMeal(db, "Test meal", [{ component: "grilled chicken", qty_g: 150 }]);
+    const id = await logMeal(db, "Test meal", [{ component: "grilled chicken", qty_g: 150 }]);
     const rows = getMealNutrition(db, id);
 
     const protein = rows.find((r) => r.nutrient === "Protein");
@@ -155,11 +155,11 @@ describe("getMealNutrition", () => {
     assert.equal(protein!.meal_name, "Test meal");
   });
 
-  it("verifies macros are sorted alphabetically within the macro group", () => {
+  it("verifies macros are sorted alphabetically within the macro group", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
-    const id = logMeal(db, "Test meal", [{ component: "grilled chicken", qty_g: 100 }]);
+    const id = await logMeal(db, "Test meal", [{ component: "grilled chicken", qty_g: 100 }]);
     const rows = getMealNutrition(db, id);
     const macros = rows.filter((r) => r.nutrient_kind === "macro").map((r) => r.nutrient);
 
@@ -170,7 +170,7 @@ describe("getMealNutrition", () => {
 });
 
 describe("seedReferenceData idempotency", () => {
-  it("can be called twice without duplicate rows or errors", () => {
+  it("can be called twice without duplicate rows or errors", async () => {
     const db = freshDb();
 
     seedReferenceData(db);
@@ -195,7 +195,7 @@ describe("component input: both string and object forms", () => {
   // and object form.
   const logMealOp = app.operations.find((o) => o.name === "log_meal")!;
 
-  it("accepts 'name:grams' string form", () => {
+  it("accepts 'name:grams' string form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Breakfast",
       components: "grilled chicken:150",
@@ -204,7 +204,7 @@ describe("component input: both string and object forms", () => {
     assert.deepEqual(parsed.data.components, [{ component: "grilled chicken", qty_g: 150 }]);
   });
 
-  it("accepts {component, qty_g} object form", () => {
+  it("accepts {component, qty_g} object form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Breakfast",
       components: [{ component: "grilled chicken", qty_g: 150 }],
@@ -213,7 +213,7 @@ describe("component input: both string and object forms", () => {
     assert.deepEqual(parsed.data.components, [{ component: "grilled chicken", qty_g: 150 }]);
   });
 
-  it("accepts multiple components as an array of strings", () => {
+  it("accepts multiple components as an array of strings", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Combo",
       components: ["grilled chicken:150", "brown rice:100"],
@@ -225,7 +225,7 @@ describe("component input: both string and object forms", () => {
     ]);
   });
 
-  it("accepts mixed array (strings and objects)", () => {
+  it("accepts mixed array (strings and objects)", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Mixed",
       components: ["grilled chicken:150", { component: "brown rice", qty_g: 100 }],
@@ -237,7 +237,7 @@ describe("component input: both string and object forms", () => {
     ]);
   });
 
-  it("rejects malformed string (missing grams)", () => {
+  it("rejects malformed string (missing grams)", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Bad",
       components: "grilled chicken",
@@ -245,7 +245,7 @@ describe("component input: both string and object forms", () => {
     assert.ok(!parsed.success, "Expected parse to fail for string without grams");
   });
 
-  it("rejects negative qty_g in object form", () => {
+  it("rejects negative qty_g in object form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Bad",
       components: [{ component: "chicken", qty_g: -10 }],
@@ -255,12 +255,12 @@ describe("component input: both string and object forms", () => {
 });
 
 describe("injection safety", () => {
-  it("stores a SQL injection string verbatim and leaves meals table intact", () => {
+  it("stores a SQL injection string verbatim and leaves meals table intact", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
     const maliciousName = `'); DROP TABLE meals;--`;
-    const id = logMeal(db, maliciousName, [{ component: "grilled chicken", qty_g: 100 }]);
+    const id = await logMeal(db, maliciousName, [{ component: "grilled chicken", qty_g: 100 }]);
 
     // The meal name should be stored verbatim
     const meal = db.prepare("SELECT name FROM meals WHERE id = ?").get(id) as any;
@@ -274,12 +274,12 @@ describe("injection safety", () => {
 });
 
 describe("unknown component", () => {
-  it("nutrition_for returns no rows for an unknown component", () => {
+  it("nutrition_for returns no rows for an unknown component", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
     // Log a meal with a component not in reference data
-    const id = logMeal(db, "Unknown dish", [{ component: "unicorn meat", qty_g: 100 }]);
+    const id = await logMeal(db, "Unknown dish", [{ component: "unicorn meat", qty_g: 100 }]);
 
     // Should return no rows (the JOIN to component_ingredients will find nothing)
     const rows = getMealNutrition(db, id);
@@ -287,10 +287,10 @@ describe("unknown component", () => {
   });
 });
 
-describe("enrichMeal (offline, fake provider)", () => {
-  // A deterministic in-memory provider — never touches the network. It records every
-  // lookup so we can assert the second enrichMeal call resolves from cache (no re-lookup).
-  function makeFakeProvider(): NutritionProvider & { lookups: string[] } {
+describe("logMeal strategy resolution (offline, fake strategy)", () => {
+  // A deterministic in-memory strategy — never touches the network. It records every lookup so we
+  // can assert a second meal using the same component resolves from cache (no re-lookup).
+  function makeFakeStrategy(): NutritionProvider & { lookups: string[] } {
     const lookups: string[] = [];
     return {
       lookups,
@@ -309,65 +309,61 @@ describe("enrichMeal (offline, fake provider)", () => {
             ],
           };
         }
-        return null; // unknown to the provider
+        return null; // unknown to the strategy
       },
     };
   }
 
-  it("fills nutrition for an unmapped component, then is an idempotent cached skip", async () => {
+  it("fills nutrition in one go via the strategy, then replays from cache for later meals", async () => {
     const db = freshDb();
     seedReferenceData(db);
+    const fake = makeFakeStrategy();
 
-    // "unicorn meat" is not in the bundled reference data, so it resolves to no nutrition.
-    const id = logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }]);
-    assert.equal(getMealNutrition(db, id).length, 0, "unmapped component should start with no nutrients");
+    // log_meal resolves "unicorn meat" in the SAME call — strategy consulted exactly once.
+    const id = await logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }], fake);
+    assert.equal(fake.lookups.length, 1, "strategy should be consulted exactly once during logMeal");
 
-    const fake = makeFakeProvider();
-
-    // 1st enrich: provider is consulted once and the result is cached into silver/gold tables.
-    const first = await enrichMeal(db, id, fake);
-    assert.equal(fake.lookups.length, 1, "provider should be consulted exactly once on first enrich");
-    assert.deepEqual(first.enriched, [{ component: "unicorn meat", ingredient: "unicorn meat" }]);
-    assert.deepEqual(first.cached, []);
-    assert.deepEqual(first.not_found, []);
-
-    // getMealNutrition now reflects the freshly cached data: 100g * 20/100 = 20g protein.
+    // Nutrition reflects the freshly cached data immediately: 100g * 20/100 = 20g protein.
     const rows = getMealNutrition(db, id);
-    assert.equal(rows.length, 5, `expected 5 nutrient rows after enrich, got ${rows.length}`);
+    assert.equal(rows.length, 5, `expected 5 nutrient rows after logMeal, got ${rows.length}`);
     const protein = rows.find((r) => r.nutrient === "Protein");
-    assert.ok(protein, "Protein row should exist after enrich");
+    assert.ok(protein, "Protein row should exist after logMeal");
     assert.ok(
       Math.abs(protein!.amount - 20) < 0.001,
       `Expected Protein ≈ 20g, got ${protein!.amount}`
     );
 
-    // 2nd enrich: the component now resolves locally, so it's a cached skip — no 2nd lookup.
-    const second = await enrichMeal(db, id, fake);
-    assert.equal(fake.lookups.length, 1, "provider must NOT be consulted again (idempotent cache skip)");
-    assert.deepEqual(second.enriched, [], "nothing newly enriched on the second call");
-    assert.deepEqual(second.cached, ["unicorn meat"], "component should report as cached on second call");
-    assert.deepEqual(second.not_found, []);
-
-    // And nutrition is unchanged — no duplicate ingredient/nutrient rows were written.
-    assert.deepEqual(getMealNutrition(db, id), rows, "nutrition should be identical after the idempotent re-enrich");
+    // A second meal with the same component resolves from cache — strategy NOT consulted again.
+    const id2 = await logMeal(db, "Unicorn again", [{ component: "unicorn meat", qty_g: 50 }], fake);
+    assert.equal(fake.lookups.length, 1, "strategy must NOT be consulted again (resolve once, replay forever)");
+    const rows2 = getMealNutrition(db, id2);
+    assert.equal(rows2.length, 5, "second meal resolves entirely from cache");
+    const protein2 = rows2.find((r) => r.nutrient === "Protein");
+    assert.ok(protein2 && Math.abs(protein2.amount - 10) < 0.001, `Expected Protein ≈ 10g, got ${protein2?.amount}`);
   });
 
-  it("reports components the provider has no data for as not_found", async () => {
+  it("leaves components the strategy has no data for unresolved", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    const fake = makeFakeStrategy();
+
+    const id = await logMeal(db, "Void soup", [{ component: "dark matter", qty_g: 50 }], fake);
+    assert.deepEqual(fake.lookups, ["dark matter"], "strategy is consulted for the unknown component");
+    assert.equal(getMealNutrition(db, id).length, 0, "no nutrition for a component the strategy can't resolve");
+  });
+
+  it("default (local) strategy stays offline — unmapped components get no nutrition", async () => {
     const db = freshDb();
     seedReferenceData(db);
 
-    const id = logMeal(db, "Void soup", [{ component: "dark matter", qty_g: 50 }]);
-    const fake = makeFakeProvider();
-
-    const outcome = await enrichMeal(db, id, fake);
-    assert.deepEqual(outcome.not_found, ["dark matter"], "provider returned null → not_found");
-    assert.deepEqual(outcome.enriched, []);
-    assert.equal(getMealNutrition(db, id).length, 0, "still no nutrition for an unresolvable component");
+    // No strategy passed → localProvider → no external lookup, so an unseeded component is empty.
+    const id = await logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }]);
+    assert.equal(getMealNutrition(db, id).length, 0, "local strategy resolves only seeded reference data");
   });
 });
 
 describe("listMeals", () => {
-  it("returns meals newest-first", () => {
+  it("returns meals newest-first", async () => {
     const db = freshDb();
     seedReferenceData(db);
 

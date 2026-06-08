@@ -1,11 +1,11 @@
 /**
- * nutrition_source.ts — external nutrition provider (the lazy, online "fill out specifics" path).
+ * nutrition_source.ts — external nutrition provider (the online "fill out specifics" path).
  *
  * Phase 4 of docs/nutrition-meal-log-design.md: when a logged component isn't in our local
- * silver/gold tables, look it up from an authoritative food database, then cache the result
- * into the SAME tables so every future log of that component resolves offline ("resolve once,
- * replay forever"). The provider is an interface so tests can inject a deterministic fake and
- * never touch the network.
+ * silver/gold tables, logMeal looks it up from an authoritative food database via this provider
+ * (the default log_meal strategy — see strategies.ts), then caches the result into the SAME tables
+ * so every future log of that component resolves offline ("resolve once, replay forever"). The
+ * provider is an interface so tests can inject a deterministic fake and never touch the network.
  *
  * Default provider: USDA FoodData Central (https://fdc.nal.usda.gov/api-guide.html). A free
  * API key raises the rate limit; absent one we fall back to USDA's shared DEMO_KEY.

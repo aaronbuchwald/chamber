@@ -10,6 +10,7 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type { NutritionProvider } from "./nutrition_source.js";
+import { localProvider } from "./strategies.js";
 
 export interface ComponentSpec {
   component: string;
@@ -32,14 +33,25 @@ export interface NutritionRow {
 }
 
 /**
- * logMeal — writes Bronze-layer rows for a new meal.
- * Returns the generated meal id.
+ * logMeal — logs a meal end-to-end in one call: it writes the Bronze rows and then fills the
+ * Silver/Gold layers for the meal's components using the chosen resolution strategy (see
+ * strategies.ts). Returns the generated meal id.
+ *
+ * The strategy is only consulted for components that don't already resolve to nutrition locally
+ * (seeded reference data or a prior lookup), and every successful lookup is cached into the same
+ * silver/gold tables — so "resolve once, replay forever": a component string is looked up at most
+ * once across all meals, and the default `local` strategy stays fully offline.
+ *
+ * Network I/O (for the usda/llm strategies) happens OUTSIDE the DB transactions; each component's
+ * writes are their own small idempotent transaction, so a mid-batch failure still leaves the
+ * Bronze row and any already-resolved components persisted.
  */
-export function logMeal(
+export async function logMeal(
   db: Database.Database,
   name: string,
-  components: ComponentSpec[]
-): string {
+  components: ComponentSpec[],
+  strategy: NutritionProvider = localProvider
+): Promise<string> {
   const mealId = randomUUID();
   const now = Date.now();
 
@@ -52,7 +64,8 @@ export function logMeal(
      VALUES (@id, @meal_id, @component, @qty_g)`
   );
 
-  const doInsert = db.transaction(() => {
+  // ── Bronze: raw, immediate ingest ──────────────────────────────────────────
+  const writeBronze = db.transaction(() => {
     insertMeal.run({ id: mealId, name, eaten_at: now });
     for (const c of components) {
       insertComponent.run({
@@ -63,9 +76,64 @@ export function logMeal(
       });
     }
   });
+  writeBronze();
 
-  doInsert();
+  // ── Silver/Gold: resolve unknown components via the chosen strategy, same call ──
+  await fillNutrition(db, components, strategy);
   return mealId;
+}
+
+/**
+ * fillNutrition — for each distinct component that does NOT already resolve to nutrition locally,
+ * ask the strategy for per-100g data and cache it into the silver/gold tables (ingredients +
+ * component_ingredients + ingredient_nutrients). Idempotent and offline-safe (the `local`
+ * strategy returns nothing, leaving components to whatever the seed data covers).
+ */
+async function fillNutrition(
+  db: Database.Database,
+  components: ComponentSpec[],
+  strategy: NutritionProvider
+): Promise<void> {
+  const distinct = [...new Set(components.map((c) => c.component))];
+
+  // A component is already resolvable if its mapping reaches at least one nutrient row.
+  const resolvable = db.prepare<{ component: string }, { x: number }>(
+    `SELECT 1 AS x FROM component_ingredients ci
+     JOIN ingredient_nutrients inu ON inu.ingredient_id = ci.ingredient_id
+     WHERE ci.component = @component LIMIT 1`
+  );
+
+  const insertIngredient = db.prepare(
+    `INSERT OR IGNORE INTO ingredients (id, canonical_name) VALUES (@id, @canonical_name)`
+  );
+  const insertMapping = db.prepare(
+    `INSERT OR IGNORE INTO component_ingredients (component, ingredient_id, fraction)
+     VALUES (@component, @ingredient_id, 1.0)`
+  );
+  const insertIngNut = db.prepare(
+    `INSERT OR IGNORE INTO ingredient_nutrients (ingredient_id, nutrient_id, amount_per_100g)
+     VALUES (@ingredient_id, @nutrient_id, @amount_per_100g)`
+  );
+
+  for (const component of distinct) {
+    if (resolvable.get({ component })) continue; // seeded or previously cached → no lookup
+    const result = await strategy.lookup(component); // network — outside any transaction
+    if (!result) continue; // strategy had no data; component stays unresolved
+
+    const ingredientId = `ing_ext_${result.external_id}`;
+    const cache = db.transaction(() => {
+      insertIngredient.run({ id: ingredientId, canonical_name: result.canonical_name });
+      insertMapping.run({ component, ingredient_id: ingredientId });
+      for (const n of result.nutrients) {
+        insertIngNut.run({
+          ingredient_id: ingredientId,
+          nutrient_id: n.nutrient_id,
+          amount_per_100g: n.amount_per_100g,
+        });
+      }
+    });
+    cache();
+  }
 }
 
 /**
@@ -98,84 +166,3 @@ export function listMeals(db: Database.Database): MealRow[] {
   return stmt.all();
 }
 
-export interface EnrichOutcome {
-  meal_id: string;
-  enriched: { component: string; ingredient: string }[]; // newly fetched + cached
-  cached: string[];                                       // already resolvable, skipped
-  not_found: string[];                                    // provider had no data
-}
-
-/**
- * enrichMeal — the lazy, online "fill out specifics" path.
- *
- * For each distinct component of a meal that does NOT already resolve to nutrition locally,
- * ask the provider (USDA, an LLM, …) for per-100g data and cache it into the SAME silver/gold
- * tables (ingredients + component_ingredients + ingredient_nutrients). After this runs,
- * getMealNutrition reflects the new data, and any future meal using that component string
- * resolves offline — no second lookup ("resolve once, replay forever").
- *
- * Network I/O happens OUTSIDE the DB transaction; each component's writes are their own small
- * idempotent transaction, so a mid-batch failure leaves already-fetched components cached.
- */
-export async function enrichMeal(
-  db: Database.Database,
-  mealId: string,
-  provider: NutritionProvider
-): Promise<EnrichOutcome> {
-  const components = (
-    db
-      .prepare<{ meal_id: string }, { component: string }>(
-        `SELECT DISTINCT component FROM meal_components WHERE meal_id = @meal_id`
-      )
-      .all({ meal_id: mealId })
-  ).map((r) => r.component);
-
-  // A component is already resolvable if its mapping reaches at least one nutrient row.
-  const resolvable = db.prepare<{ component: string }, { x: number }>(
-    `SELECT 1 AS x FROM component_ingredients ci
-     JOIN ingredient_nutrients inu ON inu.ingredient_id = ci.ingredient_id
-     WHERE ci.component = @component LIMIT 1`
-  );
-
-  const insertIngredient = db.prepare(
-    `INSERT OR IGNORE INTO ingredients (id, canonical_name) VALUES (@id, @canonical_name)`
-  );
-  const insertMapping = db.prepare(
-    `INSERT OR IGNORE INTO component_ingredients (component, ingredient_id, fraction)
-     VALUES (@component, @ingredient_id, 1.0)`
-  );
-  const insertIngNut = db.prepare(
-    `INSERT OR IGNORE INTO ingredient_nutrients (ingredient_id, nutrient_id, amount_per_100g)
-     VALUES (@ingredient_id, @nutrient_id, @amount_per_100g)`
-  );
-
-  const outcome: EnrichOutcome = { meal_id: mealId, enriched: [], cached: [], not_found: [] };
-
-  for (const component of components) {
-    if (resolvable.get({ component })) {
-      outcome.cached.push(component);
-      continue;
-    }
-    const result = await provider.lookup(component); // network — outside any transaction
-    if (!result) {
-      outcome.not_found.push(component);
-      continue;
-    }
-    const ingredientId = `ing_ext_${result.external_id}`;
-    const cache = db.transaction(() => {
-      insertIngredient.run({ id: ingredientId, canonical_name: result.canonical_name });
-      insertMapping.run({ component, ingredient_id: ingredientId });
-      for (const n of result.nutrients) {
-        insertIngNut.run({
-          ingredient_id: ingredientId,
-          nutrient_id: n.nutrient_id,
-          amount_per_100g: n.amount_per_100g,
-        });
-      }
-    });
-    cache();
-    outcome.enriched.push({ component, ingredient: result.canonical_name });
-  }
-
-  return outcome;
-}

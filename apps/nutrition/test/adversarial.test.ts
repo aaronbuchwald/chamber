@@ -134,11 +134,11 @@ function startHttpServer(port: number, cwd: string): Promise<ChildProcess> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("SQL injection — component name", () => {
-  it("stores an injection string in component as verbatim text, meals table survives", () => {
+  it("stores an injection string in component as verbatim text, meals table survives", async () => {
     const db = freshDb();
     const maliciousComponent = `'; DROP TABLE meals; --`;
     // This tests the component column path (not just meal name which the original tests cover)
-    const id = logMeal(db, "Injection test", [{ component: maliciousComponent, qty_g: 100 }]);
+    const id = await logMeal(db, "Injection test", [{ component: maliciousComponent, qty_g: 100 }]);
 
     const row = db.prepare("SELECT component FROM meal_components WHERE meal_id = ?").get(id) as any;
     assert.equal(row.component, maliciousComponent, "component should be stored verbatim");
@@ -148,10 +148,10 @@ describe("SQL injection — component name", () => {
     assert.equal(check.n, 1, "meals table must survive injection attempt in component name");
   });
 
-  it("stores a UNION-injection string in component as verbatim text", () => {
+  it("stores a UNION-injection string in component as verbatim text", async () => {
     const db = freshDb();
     const unionInjection = `grilled chicken' UNION SELECT id, id, id, 0 FROM meals --`;
-    const id = logMeal(db, "UNION injection", [{ component: unionInjection, qty_g: 100 }]);
+    const id = await logMeal(db, "UNION injection", [{ component: unionInjection, qty_g: 100 }]);
 
     const row = db.prepare("SELECT component FROM meal_components WHERE meal_id = ?").get(id) as any;
     assert.equal(row.component, unionInjection, "UNION injection should be stored verbatim");
@@ -161,10 +161,10 @@ describe("SQL injection — component name", () => {
     assert.equal(rows.length, 0, "UNION injection in component name must not leak extra rows");
   });
 
-  it("SQL injection string passed as meal_id to getMealNutrition returns empty array", () => {
+  it("SQL injection string passed as meal_id to getMealNutrition returns empty array", async () => {
     const db = freshDb();
     // Log a real meal first
-    logMeal(db, "Real meal", [{ component: "grilled chicken", qty_g: 100 }]);
+    await logMeal(db, "Real meal", [{ component: "grilled chicken", qty_g: 100 }]);
 
     // Attempt classic OR-injection as meal_id
     const rows1 = getMealNutrition(db, `' OR '1'='1`);
@@ -187,7 +187,7 @@ describe("SQL injection — component name", () => {
 describe("numeric edge cases — string form", () => {
   // REGRESSION TEST for the Infinity bug (now fixed):
   // Before the fix, 'name:Infinity' passed validation because Infinity > 0 and !NaN.
-  it("rejects 'name:Infinity' string — Infinity is not a finite quantity (regression)", () => {
+  it("rejects 'name:Infinity' string — Infinity is not a finite quantity (regression)", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Inf test",
       components: "chicken:Infinity",
@@ -195,7 +195,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Expected parse to fail for 'chicken:Infinity'");
   });
 
-  it("rejects 'name:1e309' string — overflows to Infinity at parseFloat (regression)", () => {
+  it("rejects 'name:1e309' string — overflows to Infinity at parseFloat (regression)", async () => {
     // parseFloat('1e309') === Infinity in JavaScript
     const parsed = logMealOp.input.safeParse({
       name: "Overflow test",
@@ -204,7 +204,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Expected parse to fail for 'chicken:1e309' (Infinity overflow)");
   });
 
-  it("rejects 'name:NaN' string", () => {
+  it("rejects 'name:NaN' string", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "NaN test",
       components: "chicken:NaN",
@@ -212,7 +212,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Expected parse to fail for 'chicken:NaN'");
   });
 
-  it("rejects 'name:0' string — zero grams is not a positive quantity", () => {
+  it("rejects 'name:0' string — zero grams is not a positive quantity", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Zero test",
       components: "chicken:0",
@@ -220,7 +220,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Expected parse to fail for 'chicken:0'");
   });
 
-  it("rejects 'name:-50' string — negative grams", () => {
+  it("rejects 'name:-50' string — negative grams", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Negative test",
       components: "chicken:-50",
@@ -228,7 +228,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Expected parse to fail for 'chicken:-50'");
   });
 
-  it("accepts 'name:1e308' — very large but finite quantity (by-design: no upper bound)", () => {
+  it("accepts 'name:1e308' — very large but finite quantity (by-design: no upper bound)", async () => {
     // 1e308 is finite (near Number.MAX_VALUE). Schema accepts any positive finite number.
     // This documents the actual behavior: no upper bound is enforced.
     const parsed = logMealOp.input.safeParse({
@@ -242,7 +242,7 @@ describe("numeric edge cases — string form", () => {
     );
   });
 
-  it("uses lastIndexOf so 'a:b:150' parses name='a:b', qty=150 (by-design)", () => {
+  it("uses lastIndexOf so 'a:b:150' parses name='a:b', qty=150 (by-design)", async () => {
     // The component transform uses s.lastIndexOf(':'), so colons in the name are valid.
     // This is by-design (names can contain colons as long as the last segment is the quantity).
     const parsed = logMealOp.input.safeParse({
@@ -253,7 +253,7 @@ describe("numeric edge cases — string form", () => {
     assert.deepEqual(parsed.data!.components[0], { component: "a:b", qty_g: 150 });
   });
 
-  it("trims trailing/leading spaces from component name in string form", () => {
+  it("trims trailing/leading spaces from component name in string form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Trim test",
       components: "  chicken breast  :150",
@@ -262,7 +262,7 @@ describe("numeric edge cases — string form", () => {
     assert.equal(parsed.data!.components[0].component, "chicken breast", "Name should be trimmed");
   });
 
-  it("rejects string with only spaces as component name (trims to empty)", () => {
+  it("rejects string with only spaces as component name (trims to empty)", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Blank name",
       components: "   :150",
@@ -270,7 +270,7 @@ describe("numeric edge cases — string form", () => {
     assert.ok(!parsed.success, "Whitespace-only component name should be rejected after trim");
   });
 
-  it("rejects non-numeric grams string like 'name:heavy'", () => {
+  it("rejects non-numeric grams string like 'name:heavy'", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Bad grams",
       components: "chicken:heavy",
@@ -284,7 +284,7 @@ describe("numeric edge cases — string form", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("numeric edge cases — object form", () => {
-  it("rejects qty_g = 0 in object form", () => {
+  it("rejects qty_g = 0 in object form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Zero",
       components: [{ component: "chicken", qty_g: 0 }],
@@ -292,7 +292,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "qty_g = 0 should be rejected (not positive)");
   });
 
-  it("rejects qty_g = -10 in object form", () => {
+  it("rejects qty_g = -10 in object form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Negative",
       components: [{ component: "chicken", qty_g: -10 }],
@@ -300,7 +300,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "negative qty_g should be rejected");
   });
 
-  it("rejects qty_g = NaN in object form — z.number() rejects NaN", () => {
+  it("rejects qty_g = NaN in object form — z.number() rejects NaN", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "NaN object",
       components: [{ component: "chicken", qty_g: NaN }],
@@ -308,7 +308,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "NaN qty_g should be rejected by z.number()");
   });
 
-  it("rejects qty_g = Infinity in object form — z.number() rejects Infinity", () => {
+  it("rejects qty_g = Infinity in object form — z.number() rejects Infinity", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Inf object",
       components: [{ component: "chicken", qty_g: Infinity }],
@@ -316,7 +316,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "Infinity qty_g should be rejected by z.number().positive()");
   });
 
-  it("rejects qty_g as a non-numeric string in object form", () => {
+  it("rejects qty_g as a non-numeric string in object form", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "String qty",
       components: [{ component: "chicken", qty_g: "lots" as any }],
@@ -324,7 +324,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "string qty_g should be rejected");
   });
 
-  it("rejects object form missing component field", () => {
+  it("rejects object form missing component field", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Missing field",
       components: [{ qty_g: 100 }],
@@ -332,7 +332,7 @@ describe("numeric edge cases — object form", () => {
     assert.ok(!parsed.success, "Missing component field should be rejected");
   });
 
-  it("strips extra unknown fields in object form (zod default passthrough is strip)", () => {
+  it("strips extra unknown fields in object form (zod default passthrough is strip)", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Extra fields",
       components: [{ component: "chicken", qty_g: 100, extra: "hacked", injected: true }],
@@ -351,16 +351,16 @@ describe("numeric edge cases — object form", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("empty components array", () => {
-  it("is accepted by the schema (no .min(1) guard — by-design, documents actual behavior)", () => {
+  it("is accepted by the schema (no .min(1) guard — by-design, documents actual behavior)", async () => {
     // The schema does not enforce at least one component. An empty meal is allowed.
     // This is by-design: the schema is permissive; the handler just creates a meal with 0 components.
     const parsed = logMealOp.input.safeParse({ name: "Empty meal", components: [] });
     assert.ok(parsed.success, "Empty components [] is accepted (no min(1) constraint)");
   });
 
-  it("empty-component meal stores a meal row and getMealNutrition returns [] (no error)", () => {
+  it("empty-component meal stores a meal row and getMealNutrition returns [] (no error)", async () => {
     const db = freshDb();
-    const id = logMeal(db, "Empty meal", []);
+    const id = await logMeal(db, "Empty meal", []);
 
     const meal = db.prepare("SELECT * FROM meals WHERE id = ?").get(id) as any;
     assert.ok(meal, "meal row should exist");
@@ -375,10 +375,10 @@ describe("empty components array", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("duplicate components — Gold-view SUM", () => {
-  it("two same-named components SUM their quantities correctly", () => {
+  it("two same-named components SUM their quantities correctly", async () => {
     // logging 'grilled chicken' twice should sum to 250g total
     const db = freshDb();
-    const id = logMeal(db, "Double chicken", [
+    const id = await logMeal(db, "Double chicken", [
       { component: "grilled chicken", qty_g: 100 },
       { component: "grilled chicken", qty_g: 150 },
     ]);
@@ -393,11 +393,11 @@ describe("duplicate components — Gold-view SUM", () => {
     );
   });
 
-  it("two different components that map to the same ingredient SUM correctly", () => {
+  it("two different components that map to the same ingredient SUM correctly", async () => {
     // 'egg' (100g) + 'scrambled eggs' (100g) — both map to ing_egg, fraction=1.0
     // Expected protein: (100 + 100) / 100 * 13.0 = 26.0
     const db = freshDb();
-    const id = logMeal(db, "Egg two ways", [
+    const id = await logMeal(db, "Egg two ways", [
       { component: "egg", qty_g: 100 },
       { component: "scrambled eggs", qty_g: 100 },
     ]);
@@ -417,7 +417,7 @@ describe("duplicate components — Gold-view SUM", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("multi-ingredient components — fractional math", () => {
-  it("component mapping to two ingredients with fractions produces correct nutrient sum", () => {
+  it("component mapping to two ingredients with fractions produces correct nutrient sum", async () => {
     // Construct a custom DB with a 2-ingredient component:
     //   'custom mix': 40% grilled chicken + 60% brown rice
     // For 200g of custom mix:
@@ -450,7 +450,7 @@ describe("multi-ingredient components — fractional math", () => {
     db.prepare("INSERT INTO ingredient_nutrients VALUES (?, ?, ?)").run("ing_chicken", "nut_protein", 31.0);
     db.prepare("INSERT INTO ingredient_nutrients VALUES (?, ?, ?)").run("ing_rice", "nut_protein", 2.6);
 
-    const id = logMeal(db, "Fractional mix", [{ component: "custom mix", qty_g: 200 }]);
+    const id = await logMeal(db, "Fractional mix", [{ component: "custom mix", qty_g: 200 }]);
     const rows = getMealNutrition(db, id);
     const protein = rows.find((r) => r.nutrient === "Protein");
     assert.ok(protein, "Protein row should exist");
@@ -461,10 +461,10 @@ describe("multi-ingredient components — fractional math", () => {
     );
   });
 
-  it("Gold-view is deterministic: same inputs always produce same output", () => {
+  it("Gold-view is deterministic: same inputs always produce same output", async () => {
     // Run the same query twice and confirm results are identical
     const db = freshDb();
-    const id = logMeal(db, "Determinism test", [
+    const id = await logMeal(db, "Determinism test", [
       { component: "grilled chicken", qty_g: 150 },
       { component: "brown rice", qty_g: 100 },
     ]);
@@ -520,7 +520,7 @@ describe("HTTP layer — robustness", () => {
     assert.equal(aliveResp.status, 200, "Server must stay up after malformed JSON request");
   });
 
-  it("POST with no content-type and valid JSON body is accepted (content-type not checked)", () => {
+  it("POST with no content-type and valid JSON body is accepted (content-type not checked)", async () => {
     // DOCUMENTS by-design behavior: the HTTP layer does not enforce content-type header.
     // This is a known leniency — document it rather than silently depend on it.
     return fetch(`${baseUrl}/log_meal`, {
@@ -629,19 +629,19 @@ describe("HTTP layer — robustness", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("unicode and special characters in names", () => {
-  it("unicode meal name is stored and retrieved verbatim", () => {
+  it("unicode meal name is stored and retrieved verbatim", async () => {
     const db = freshDb();
     const unicodeName = "鶏の照り焼き定食 🍗";
-    const id = logMeal(db, unicodeName, [{ component: "grilled chicken", qty_g: 150 }]);
+    const id = await logMeal(db, unicodeName, [{ component: "grilled chicken", qty_g: 150 }]);
 
     const meal = db.prepare("SELECT name FROM meals WHERE id = ?").get(id) as any;
     assert.equal(meal.name, unicodeName, "Unicode meal name should be stored verbatim");
   });
 
-  it("unicode component name is stored verbatim (no nutrition rows — unknown component)", () => {
+  it("unicode component name is stored verbatim (no nutrition rows — unknown component)", async () => {
     const db = freshDb();
     const unicodeComponent = "Poulet rôti";
-    const id = logMeal(db, "French meal", [{ component: unicodeComponent, qty_g: 150 }]);
+    const id = await logMeal(db, "French meal", [{ component: unicodeComponent, qty_g: 150 }]);
 
     const row = db.prepare("SELECT component FROM meal_components WHERE meal_id = ?").get(id) as any;
     assert.equal(row.component, unicodeComponent, "Unicode component name should be stored verbatim");
@@ -651,7 +651,7 @@ describe("unicode and special characters in names", () => {
     assert.equal(rows.length, 0, "Unknown unicode component should produce no nutrition rows");
   });
 
-  it("parses unicode in string form 'name:grams' — component name before last colon is preserved", () => {
+  it("parses unicode in string form 'name:grams' — component name before last colon is preserved", async () => {
     const parsed = logMealOp.input.safeParse({
       name: "Unicode test",
       components: "鶏の照り焼き:150",
@@ -661,10 +661,10 @@ describe("unicode and special characters in names", () => {
     assert.equal(parsed.data!.components[0].qty_g, 150);
   });
 
-  it("meal name with SQL metacharacters stored verbatim (apostrophe, semicolon, quotes)", () => {
+  it("meal name with SQL metacharacters stored verbatim (apostrophe, semicolon, quotes)", async () => {
     const db = freshDb();
     const trickName = `O'Malley's "Healthy" Bowl; DROP TABLE meals; --`;
-    const id = logMeal(db, trickName, [{ component: "grilled chicken", qty_g: 100 }]);
+    const id = await logMeal(db, trickName, [{ component: "grilled chicken", qty_g: 100 }]);
 
     const meal = db.prepare("SELECT name FROM meals WHERE id = ?").get(id) as any;
     assert.equal(meal.name, trickName, "Meal name with SQL metacharacters should be stored verbatim");
@@ -680,39 +680,39 @@ describe("unicode and special characters in names", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("schema validation — top-level fields", () => {
-  it("rejects log_meal with missing name field", () => {
+  it("rejects log_meal with missing name field", async () => {
     const parsed = logMealOp.input.safeParse({
       components: ["grilled chicken:100"],
     });
     assert.ok(!parsed.success, "Missing 'name' field should be rejected");
   });
 
-  it("rejects log_meal with missing components field (undefined)", () => {
+  it("rejects log_meal with missing components field (undefined)", async () => {
     const parsed = logMealOp.input.safeParse({ name: "No components" });
     assert.ok(!parsed.success, "Missing 'components' field (undefined) should be rejected");
   });
 
-  it("rejects log_meal with null components", () => {
+  it("rejects log_meal with null components", async () => {
     const parsed = logMealOp.input.safeParse({ name: "Null comps", components: null });
     assert.ok(!parsed.success, "null components should be rejected");
   });
 
-  it("rejects log_meal with numeric name", () => {
+  it("rejects log_meal with numeric name", async () => {
     const parsed = logMealOp.input.safeParse({ name: 42, components: ["egg:100"] });
     assert.ok(!parsed.success, "Numeric name should be rejected by z.string()");
   });
 
-  it("rejects nutrition_for with missing meal_id", () => {
+  it("rejects nutrition_for with missing meal_id", async () => {
     const parsed = nutritionForOp.input.safeParse({});
     assert.ok(!parsed.success, "Missing meal_id should be rejected");
   });
 
-  it("rejects nutrition_for with numeric meal_id", () => {
+  it("rejects nutrition_for with numeric meal_id", async () => {
     const parsed = nutritionForOp.input.safeParse({ meal_id: 12345 });
     assert.ok(!parsed.success, "Numeric meal_id should be rejected by z.string()");
   });
 
-  it("accepts empty string as meal_id (z.string() allows it — by-design)", () => {
+  it("accepts empty string as meal_id (z.string() allows it — by-design)", async () => {
     // z.string() with no .min(1) accepts empty strings.
     // This documents the actual behavior: no UUID-format validation.
     const parsed = nutritionForOp.input.safeParse({ meal_id: "" });

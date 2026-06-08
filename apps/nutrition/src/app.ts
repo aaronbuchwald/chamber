@@ -9,16 +9,16 @@
 import { defineApp, z, arrayOf } from "../../../packages/appkit/src/index.js";
 import { openDb } from "./db.js";
 import { seedReferenceData } from "./seed.js";
-import { logMeal, getMealNutrition, listMeals, enrichMeal } from "./operations.js";
-import { usdaProvider } from "./nutrition_source.js";
-import { llmProvider } from "./llm_source.js";
+import { logMeal, getMealNutrition, listMeals } from "./operations.js";
+import { selectStrategy } from "./strategies.js";
 
 const db = openDb();
 seedReferenceData(db);
 
-// Which external source fills in nutrition for unknown components. USDA is the deterministic
-// default; set NUTRITION_PROVIDER=llm to decompose/estimate via an LLM instead (see llm_source.ts).
-const provider = process.env.NUTRITION_PROVIDER === "llm" ? llmProvider : usdaProvider;
+// Strategy that fills nutrition for unknown components as part of log_meal (see strategies.ts).
+// USDA is the deterministic default; NUTRITION_PROVIDER=llm estimates via an LLM, and
+// NUTRITION_PROVIDER=local stays fully offline (seeded reference data only).
+const strategy = selectStrategy(process.env.NUTRITION_PROVIDER);
 
 /** A component is "name:grams" (CLI-friendly) OR {component, qty_g} (JSON clients). */
 const component = z.union([
@@ -41,12 +41,14 @@ export const app = defineApp({
   operations: [
     {
       name: "log_meal",
-      summary: "Log a meal (Bronze layer) with its components.",
+      summary:
+        "Log a meal and resolve its nutrition end-to-end (Bronze → Silver → Gold) in one call, " +
+        "filling unknown components from the configured strategy (USDA/LLM/local).",
       input: z.object({
         name: z.string().describe("Meal name, e.g. 'Chicken burrito bowl'"),
         components: arrayOf(component).describe('Components as "name:grams" or {component, qty_g}'),
       }),
-      handler: ({ name, components }) => ({ meal_id: logMeal(db, name, components) }),
+      handler: async ({ name, components }) => ({ meal_id: await logMeal(db, name, components, strategy) }),
     },
     {
       name: "nutrition_for",
@@ -59,13 +61,6 @@ export const app = defineApp({
       summary: "List all logged meals, newest first.",
       input: z.object({}),
       handler: () => listMeals(db),
-    },
-    {
-      name: "enrich_meal",
-      summary:
-        "Look up nutrition for a meal's unknown components from an external source (USDA or LLM) and cache it locally.",
-      input: z.object({ meal_id: z.string().describe("Meal id returned by log_meal") }),
-      handler: ({ meal_id }) => enrichMeal(db, meal_id, provider),
     },
   ],
 });

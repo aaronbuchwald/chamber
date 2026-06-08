@@ -18,25 +18,6 @@ import { logMeal, getMealNutrition, listMeals } from "./operations.js";
 const db = openDb();
 seedReferenceData(db);
 
-console.log("=== Chamber Nutrition Tracker — Demo ===\n");
-console.log("SQLite library: better-sqlite3 (native)\n");
-
-// ── Log meal 1: Chicken burrito bowl ─────────────────────────────────────
-const meal1Id = logMeal(db, "Chicken burrito bowl", [
-  { component: "grilled chicken", qty_g: 150 },
-  { component: "brown rice",      qty_g: 200 },
-  { component: "olive oil",       qty_g:  10 },
-  { component: "broccoli",        qty_g: 100 },
-]);
-console.log(`Logged "Chicken burrito bowl"  → id=${meal1Id}`);
-
-// ── Log meal 2: Breakfast oats ────────────────────────────────────────────
-const meal2Id = logMeal(db, "Breakfast oats", [
-  { component: "rolled oats",     qty_g:  80 },
-  { component: "scrambled eggs",  qty_g: 100 },
-]);
-console.log(`Logged "Breakfast oats"        → id=${meal2Id}\n`);
-
 // ── Print nutrition for each meal ────────────────────────────────────────
 function printNutrition(mealId: string): void {
   const rows = getMealNutrition(db, mealId);
@@ -64,17 +45,42 @@ function printNutrition(mealId: string): void {
   console.log("─".repeat(44) + "\n");
 }
 
-printNutrition(meal1Id);
-printNutrition(meal2Id);
+// logMeal now resolves nutrition in the same call, so it's async — run the demo in an async main
+// (this project transpiles to CJS via tsx, where top-level await isn't available).
+async function main(): Promise<void> {
+  console.log("=== Chamber Nutrition Tracker — Demo ===\n");
+  console.log("SQLite library: better-sqlite3 (native)\n");
 
-// ── List all logged meals ─────────────────────────────────────────────────
-const meals = listMeals(db);
-console.log("All logged meals:");
-console.log("─".repeat(72));
-for (const m of meals) {
-  const date = new Date(m.eaten_at).toISOString();
-  console.log(`  ${m.id}  ${m.name.padEnd(30)}  ${date}`);
+  // ── Log meal 1: Chicken burrito bowl ─────────────────────────────────────
+  const meal1Id = await logMeal(db, "Chicken burrito bowl", [
+    { component: "grilled chicken", qty_g: 150 },
+    { component: "brown rice",      qty_g: 200 },
+    { component: "olive oil",       qty_g:  10 },
+    { component: "broccoli",        qty_g: 100 },
+  ]);
+  console.log(`Logged "Chicken burrito bowl"  → id=${meal1Id}`);
+
+  // ── Log meal 2: Breakfast oats ────────────────────────────────────────────
+  const meal2Id = await logMeal(db, "Breakfast oats", [
+    { component: "rolled oats",     qty_g:  80 },
+    { component: "scrambled eggs",  qty_g: 100 },
+  ]);
+  console.log(`Logged "Breakfast oats"        → id=${meal2Id}\n`);
+
+  printNutrition(meal1Id);
+  printNutrition(meal2Id);
+
+  // ── List all logged meals ─────────────────────────────────────────────────
+  const meals = listMeals(db);
+  console.log("All logged meals:");
+  console.log("─".repeat(72));
+  for (const m of meals) {
+    const date = new Date(m.eaten_at).toISOString();
+    console.log(`  ${m.id}  ${m.name.padEnd(30)}  ${date}`);
+  }
+  console.log("─".repeat(72));
+
+  db.close();
 }
-console.log("─".repeat(72));
 
-db.close();
+main();
