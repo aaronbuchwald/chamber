@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deriveSchema, invokeOperation, openSqlite } from "@chamber/datagram";
-import { NutritionService } from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
+import { NutritionService } from "@chamber/proto/nutrition/v1/nutrition_pb";
 import { APP_DIR, buildNutritionDatagram, referenceTable } from "../src/service.js";
 import { offlineStrategy } from "../src/strategies.js";
 import type { NutritionStrategy, ReferenceRow } from "../src/strategies.js";

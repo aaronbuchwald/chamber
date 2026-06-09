@@ -7,8 +7,7 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./backends/sqlite": "./src/backends/sqlite.ts",
-    "./gen/*": "./gen/*.ts"
+    "./backends/sqlite": "./src/backends/sqlite.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -16,6 +15,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.2.3",
+    "@chamber/proto": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.10.0"
   },

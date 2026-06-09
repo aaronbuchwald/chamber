@@ -14,7 +14,7 @@ contract under [`proto/`](proto/) is the source of truth.
 ```
 proto/                 # the contract (chamber.v1 options + nutrition.v1 datagram) — verified, do not gold-plate
 packages/              # SDK runtime (@chamber/datagram): gen/ + data handle + proto→ops runner
-apps/                  # datagram apps (nutrition-dg: the v0 port)
+apps/                  # datagram apps (nutrition: the v0 port)
 docs/datagram-v0-plan.md  # the v0 handoff / plan
 SPEC.md                # the broader Chamber spec (§7 data store, §11 grants, §12 security)
 ```

@@ -15,7 +15,7 @@
 
 import { type DescMessage, type DescService, ScalarType } from "@bufbuild/protobuf";
 import { getOption, hasOption } from "@bufbuild/protobuf";
-import { transform } from "../gen/chamber/v1/options_pb.js";
+import { transform } from "@chamber/proto/chamber/v1/options_pb";
 import type { Row, TableSchema } from "./data.js";
 
 /** A column in a derived base-table schema. */

@@ -1,0 +1,23 @@
+{
+  "name": "@chamber/nutrition",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The nutrition datagram — three handlers over @chamber/datagram's typed string-free data layer, served via one process that composes HTTP + MCP controllers over a single instance.",
+  "license": "MIT",
+  "scripts": {
+    "start": "node --import tsx src/main.ts serve",
+    "serve": "node --import tsx src/main.ts serve",
+    "mcp": "node --import tsx src/main.ts serve --mcp",
+    "cli": "node --import tsx src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:live": "node --env-file=../../.env --import tsx --test test/live/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.103.0",
+    "@bufbuild/protobuf": "^2.2.3",
+    "@chamber/datagram": "*",
+    "@chamber/proto": "*"
+  }
+}

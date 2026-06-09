@@ -30,8 +30,8 @@ import type {
   ListMealsRequest,
   LogMealRequest,
   NutritionForRequest,
-} from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
-import { NutritionService } from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
+} from "@chamber/proto/nutrition/v1/nutrition_pb";
+import { NutritionService } from "@chamber/proto/nutrition/v1/nutrition_pb";
 import { type NutritionStrategy, type ReferenceRow, offlineStrategy } from "./strategies.js";
 
 /** The app root (parent of src/), used to resolve seed + transform files. */
@@ -213,6 +213,6 @@ export function buildNutritionDatagram(opts: BuildOptions = {}): NutritionDatagr
   };
 
   const operations = protoToOperations(service, backend, handlers, SUMMARIES);
-  const app = defineApp({ name: "nutrition-dg", version: "0.0.0", operations });
+  const app = defineApp({ name: "nutrition", version: "0.0.0", operations });
   return { app, close: () => backend.close() };
 }

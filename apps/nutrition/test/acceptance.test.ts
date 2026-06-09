@@ -23,8 +23,8 @@ import {
   openSqlite,
   protoToOperations,
 } from "@chamber/datagram";
-import { Access, access as accessExt } from "@chamber/datagram/gen/chamber/v1/options_pb";
-import { NutritionService } from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
+import { Access, access as accessExt } from "@chamber/proto/chamber/v1/options_pb";
+import { NutritionService } from "@chamber/proto/nutrition/v1/nutrition_pb";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { APP_DIR, buildNutritionDatagram, referenceTable } from "../src/service.js";

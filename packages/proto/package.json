@@ -1,0 +1,17 @@
+{
+  "name": "@chamber/proto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generated TypeScript types + descriptors for the repo's protobuf contracts (chamber.v1 options, domain datagrams). The single home for generated code — domain packages depend on this so neither the SDK nor any app vendors another domain's generated code.",
+  "license": "MIT",
+  "exports": {
+    "./*": "./gen/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.3"
+  }
+}

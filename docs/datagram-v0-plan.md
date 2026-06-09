@@ -89,7 +89,7 @@ the way a component gets its nutrient values pluggable, without changing the dat
 contract (the proto Meal/MealComponent/MealNutrition + NutritionService are untouched —
 strategy is purely *how* `component_nutrients` is populated):
 
-- **Strategy seam** (`apps/nutrition-dg/src/strategies.ts`): a `NutritionStrategy` has an
+- **Strategy seam** (`apps/nutrition/src/strategies.ts`): a `NutritionStrategy` has an
   optional `seed` (pre-seed `component_nutrients` at build time) and an optional async
   `resolve(component)` (dynamic per-component lookup).
   - `offlineStrategy` (default) — supplies the bundled seed, no `resolve`; deterministic,
@@ -201,7 +201,7 @@ the existing `serveHttp(app, port, { staticDir })` (gives HTTP JSON + `/openapi.
 + `/ui` + `/events` SSE) and `serveMcp(app)`. The generic `/ui` console, made live
 by the existing `/events` wiring, **is** the v0 generated WebUI.
 
-## 6. Nutrition port (`apps/nutrition-dg`)
+## 6. Nutrition port (`apps/nutrition`)
 
 Leave the existing `apps/nutrition` untouched (side-by-side comparison). New app:
 - `transforms/gold_meal_nutrition.sql` — the Gold view: join `meal_components` →
@@ -220,7 +220,7 @@ Leave the existing `apps/nutrition` untouched (side-by-side comparison). New app
     nothing.
 - `src/{http.ts,mcp.ts,cli.ts}` — three entry points wiring the proto service +
   handlers into `serveHttp` / `serveMcp` / `runCli`, mirroring `apps/nutrition/src`.
-- Register `nutrition-dg` in `agentgateway-all.yaml` / `start.sh` analogously to
+- Register `nutrition` in `agentgateway-all.yaml` / `start.sh` analogously to
   the existing nutrition app if you want the gateway MCP path (the MCP write →
   HTTP route → SSE push is how cross-front-end live updates work; see §2).
 
@@ -230,7 +230,7 @@ Leave the existing `apps/nutrition` untouched (side-by-side comparison). New app
 nvm use 22                                   # better-sqlite3 needs Node 22, NOT 25
 buf lint && buf generate                     # from repo root → packages/datagram/gen
 cd packages/datagram && npm i
-cd ../../apps/nutrition-dg && npm i && npm run serve   # HTTP + /ui + /events
+cd ../../apps/nutrition && npm i && npm run serve   # HTTP + /ui + /events
 ```
 
 ### Acceptance criteria

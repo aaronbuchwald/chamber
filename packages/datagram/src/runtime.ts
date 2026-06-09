@@ -555,3 +555,43 @@ export function mcpServer(app: AppDef): Server {
   });
   return server;
 }
+
+// ──────────────────── controller composition (one instance) ────────────────
+
+export interface ServeOptions {
+  /** Attach an HTTP controller (default: on). `false` disables it; an object sets its options. */
+  http?: { port?: number; staticDir?: string } | false;
+  /** Attach an MCP stdio controller over the SAME app (default: off). */
+  mcp?: boolean;
+}
+
+/** A running set of controllers; `close()` shuts them all down. */
+export interface ServeHandle {
+  close(): Promise<void>;
+}
+
+/**
+ * Compose multiple controllers over ONE built {@link AppDef} in a single process.
+ * Every controller dispatches through the same {@link invokeOperation} and the same
+ * process mutation bus, so a write arriving on the MCP controller pushes an SSE event
+ * to the HTTP controller's `/events` subscribers — cross-front-end live views, in
+ * process, no shared DB-file or gateway round-trip required. (The CLI is a separate
+ * one-shot entry, not a long-running controller.)
+ */
+export async function serve(app: AppDef, opts: ServeOptions = {}): Promise<ServeHandle> {
+  const closers: Array<() => Promise<void>> = [];
+  if (opts.http !== false) {
+    const { port, staticDir } = opts.http ?? {};
+    const server = serveHttp(app, port, staticDir ? { staticDir } : {});
+    closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  }
+  if (opts.mcp) {
+    // Connects the MCP stdio transport; it keeps running alongside the HTTP server.
+    await serveMcp(app);
+  }
+  return {
+    async close() {
+      for (const c of closers) await c();
+    },
+  };
+}

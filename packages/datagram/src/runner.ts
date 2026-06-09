@@ -19,7 +19,7 @@
 
 import { type DescMethod, type DescService, type Message, fromJson } from "@bufbuild/protobuf";
 import { getOption } from "@bufbuild/protobuf";
-import { Access, Effect, access, effect } from "../gen/chamber/v1/options_pb.js";
+import { Access, Effect, access, effect } from "@chamber/proto/chamber/v1/options_pb";
 import type { DataHandle } from "./data.js";
 import { protoMessageToJsonSchema } from "./jsonschema.js";
 import type { Operation, ValidateResult } from "./runtime.js";
