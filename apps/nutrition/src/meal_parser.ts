@@ -23,6 +23,17 @@ import { fetchCalorieNinjasItems } from "./calorieninjas_source.js";
 export interface MealParser {
   /** Break a free-text meal description into its component foods + estimated grams per serving. */
   parse(description: string): Promise<ComponentSpec[]>;
+  /**
+   * Optional: identify the foods + estimated grams in a meal *photo*. Only image-capable parsers
+   * (a vision LLM) implement this; the server gates the image path on its presence (see
+   * parserSupportsImage). imageBase64 is the raw base64 (no data: prefix); mediaType is its MIME type.
+   */
+  parseImage?(imageBase64: string, mediaType: string): Promise<ComponentSpec[]>;
+}
+
+/** Whether the active parser can turn a photo into components (i.e. implements parseImage). */
+export function parserSupportsImage(parser: MealParser): boolean {
+  return typeof parser.parseImage === "function";
 }
 
 // Structured-output schema: the list of foods that make up the described meal.
@@ -58,55 +69,79 @@ interface ParsedMeal {
   components: { component: string; qty_g: number }[];
 }
 
+// Shared system prompt: the model breaks a meal (described or pictured) into its individual foods
+// and estimates the edible grams of each in ONE serving.
+const MEAL_PARSE_SYSTEM =
+  "You break a meal into the individual foods a person eats and estimate how many " +
+  "grams of each they eat in ONE serving. Assume a single typical serving " +
+  "unless a quantity is given (e.g. '2 bagels', 'a large bowl'). Split composite dishes " +
+  "into their parts — e.g. a sausage egg and cheese everything bagel becomes an everything " +
+  "bagel, a sausage patty, a fried egg, and a slice of cheese. Use realistic cooked/as-served " +
+  "edible gram weights. Name each component as a plain, lookup-friendly food name.";
+
+/**
+ * Load the Anthropic SDK (dynamic import, as in llm_source.ts) and construct a client, applying the
+ * same missing-sdk / missing-key guards both the text and image parse paths share.
+ */
+async function anthropicClient(): Promise<any> {
+  let Anthropic: any;
+  try {
+    Anthropic = (await import("@anthropic-ai/sdk")).default;
+  } catch {
+    throw new Error(
+      "Parsing a meal with the LLM requires @anthropic-ai/sdk — run `npm install @anthropic-ai/sdk` in apps/nutrition, " +
+        "or pass explicit `components` (or set MEAL_PARSER=passthrough)."
+    );
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error(
+      "Parsing a meal with the LLM requires ANTHROPIC_API_KEY — set it, pass explicit `components`, or set MEAL_PARSER=passthrough."
+    );
+  }
+  return new Anthropic(); // reads ANTHROPIC_API_KEY from env
+}
+
+/** Run the structured-output request given a user message `content` (text or multimodal). */
+async function parseWithLlm(content: any): Promise<ComponentSpec[]> {
+  const client = await anthropicClient();
+  const response = await client.messages.create({
+    model: "claude-opus-4-8", // vision-capable: handles both text and image content
+    max_tokens: 1024,
+    thinking: { type: "disabled" }, // fast decomposition; structured output keeps it terse
+    output_config: {
+      effort: "low",
+      format: { type: "json_schema", schema: MEAL_PARSE_SCHEMA },
+    },
+    system: MEAL_PARSE_SYSTEM,
+    messages: [{ role: "user", content }],
+  });
+
+  const block = (response.content as any[]).find((b) => b.type === "text");
+  if (!block) return [];
+  const data = JSON.parse(block.text) as ParsedMeal;
+  // Keep only well-formed, positive-weight components.
+  return (data.components ?? [])
+    .map((c) => ({ component: String(c.component ?? "").trim(), qty_g: Number(c.qty_g) }))
+    .filter((c) => c.component !== "" && Number.isFinite(c.qty_g) && c.qty_g > 0);
+}
+
 /**
  * The default parser: an LLM decomposes the description into foods and estimates a realistic
  * portion (grams) for each, assuming one typical serving unless the text says otherwise. Requires
  * ANTHROPIC_API_KEY and @anthropic-ai/sdk (the same dependency llm_source.ts uses).
+ *
+ * Being a vision-capable model (claude-opus-4-8), it ALSO implements parseImage — turning a meal
+ * photo into the same components/portions — which is what gates the WebUI/MCP image path on.
  */
 export const llmMealParser: MealParser = {
-  async parse(description: string): Promise<ComponentSpec[]> {
-    let Anthropic: any;
-    try {
-      Anthropic = (await import("@anthropic-ai/sdk")).default;
-    } catch {
-      throw new Error(
-        "Parsing a free-text meal requires @anthropic-ai/sdk — run `npm install @anthropic-ai/sdk` in apps/nutrition, " +
-          "or pass explicit `components` (or set MEAL_PARSER=passthrough)."
-      );
-    }
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error(
-        "Parsing a free-text meal requires ANTHROPIC_API_KEY — set it, pass explicit `components`, or set MEAL_PARSER=passthrough."
-      );
-    }
-
-    const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
-
-    const response = await client.messages.create({
-      model: "claude-opus-4-8",
-      max_tokens: 1024,
-      thinking: { type: "disabled" }, // fast decomposition; structured output keeps it terse
-      output_config: {
-        effort: "low",
-        format: { type: "json_schema", schema: MEAL_PARSE_SCHEMA },
-      },
-      system:
-        "You break a described meal into the individual foods a person eats and estimate how many " +
-        "grams of each they eat in ONE serving of what's described. Assume a single typical serving " +
-        "unless the text gives a quantity (e.g. '2 bagels', 'a large bowl'). Split composite dishes " +
-        "into their parts — e.g. 'sausage egg and cheese everything bagel' becomes an everything " +
-        "bagel, a sausage patty, a fried egg, and a slice of cheese. Use realistic cooked/as-served " +
-        "edible gram weights. Name each component as a plain, lookup-friendly food name.",
-      messages: [{ role: "user", content: `Meal: "${description}"` }],
-    });
-
-    const block = (response.content as any[]).find((b) => b.type === "text");
-    if (!block) return [];
-    const data = JSON.parse(block.text) as ParsedMeal;
-    // Keep only well-formed, positive-weight components.
-    return (data.components ?? [])
-      .map((c) => ({ component: String(c.component ?? "").trim(), qty_g: Number(c.qty_g) }))
-      .filter((c) => c.component !== "" && Number.isFinite(c.qty_g) && c.qty_g > 0);
+  parse(description: string): Promise<ComponentSpec[]> {
+    return parseWithLlm(`Meal: "${description}"`);
+  },
+  parseImage(imageBase64: string, mediaType: string): Promise<ComponentSpec[]> {
+    return parseWithLlm([
+      { type: "image", source: { type: "base64", media_type: mediaType, data: imageBase64 } },
+      { type: "text", text: "List the foods in this meal and estimate the edible grams of each in one serving." },
+    ]);
   },
 };
 

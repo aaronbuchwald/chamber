@@ -91,6 +91,13 @@ import { logMeal, getMealNutrition, listMeals } from "../src/operations.js";
 import type { NutritionProvider, ProviderResult } from "../src/nutrition_source.js";
 import { app } from "../src/app.js";
 import { z } from "../../../packages/appkit/src/index.js";
+import {
+  parserSupportsImage,
+  llmMealParser,
+  passthroughMealParser,
+  calorieNinjasMealParser,
+  type MealParser,
+} from "../src/meal_parser.js";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -359,6 +366,54 @@ describe("logMeal strategy resolution (offline, fake strategy)", () => {
     // No strategy passed → localProvider → no external lookup, so an unseeded component is empty.
     const id = await logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }]);
     assert.equal(getMealNutrition(db, id).length, 0, "local strategy resolves only seeded reference data");
+  });
+});
+
+describe("image meal input — vision capability gate", () => {
+  // Only the vision-capable LLM parser implements parseImage; the offline/non-LLM parsers do not.
+  it("parserSupportsImage is true only for the LLM parser", () => {
+    assert.equal(parserSupportsImage(llmMealParser), true, "llm parser should support images");
+    assert.equal(parserSupportsImage(passthroughMealParser), false, "passthrough must not support images");
+    assert.equal(parserSupportsImage(calorieNinjasMealParser), false, "calorieninjas must not support images");
+  });
+
+  // The app is imported with the default (no MEAL_PARSER env) → passthrough, a non-vision parser,
+  // so its log_meal handler must reject an image with the exact gate error.
+  const logMealOp = app.operations.find((o) => o.name === "log_meal")!;
+
+  it("log_meal rejects an image with the exact gate error when the parser isn't image-capable", async () => {
+    await assert.rejects(
+      () => (logMealOp.handler as any)({ image_base64: "Zm9v", image_media_type: "image/jpeg" }),
+      /^Error: Image input requires an image-capable LLM parser \(set MEAL_PARSER=llm with ANTHROPIC_API_KEY\)\.$/
+    );
+  });
+
+  it("capabilities reports image_input:false under the default (passthrough) parser", async () => {
+    const capsOp = app.operations.find((o) => o.name === "capabilities")!;
+    const caps = await (capsOp.handler as any)({});
+    assert.equal(caps.image_input, false);
+  });
+
+  it("an image-capable parser logs a meal from a photo (no description, parser stubbed — no network)", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    // A stub vision parser: implements parseImage, returns a seeded component so nutrition resolves.
+    const visionParser: MealParser = {
+      async parse() { return []; },
+      async parseImage(b64: string, mt: string) {
+        assert.equal(b64, "aW1hZ2U=");
+        assert.equal(mt, "image/png");
+        return [{ component: "grilled chicken", qty_g: 150 }];
+      },
+    };
+    assert.equal(parserSupportsImage(visionParser), true);
+    // Exercise the same routing the handler does, against an isolated db (the app's handler is bound
+    // to the module-level passthrough parser, so we replay the documented image path here directly).
+    const comps = await visionParser.parseImage!("aW1hZ2U=", "image/png");
+    const id = await logMeal(db, "Meal from photo", comps);
+    const rows = getMealNutrition(db, id);
+    const protein = rows.find((r) => r.nutrient === "Protein");
+    assert.ok(protein && Math.abs(protein.amount - 46.5) < 0.001, `expected Protein ≈ 46.5g, got ${protein?.amount}`);
   });
 });
 

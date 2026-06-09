@@ -11,7 +11,7 @@ import { openDb } from "./db.js";
 import { seedReferenceData } from "./seed.js";
 import { logMeal, getMealNutrition, listMeals, type ComponentSpec } from "./operations.js";
 import { selectStrategy } from "./strategies.js";
-import { selectParser } from "./meal_parser.js";
+import { selectParser, parserSupportsImage } from "./meal_parser.js";
 
 const db = openDb();
 seedReferenceData(db);
@@ -65,6 +65,17 @@ export const app = defineApp({
         components: arrayOf(component)
           .optional()
           .describe('Optional explicit components as "name:grams" or {component, qty_g}; skips estimation when given.'),
+        image_base64: z
+          .string()
+          .optional()
+          .describe(
+            "Base64-encoded meal photo (no data: prefix). When provided without explicit `components`, a " +
+              "vision-capable LLM identifies the foods and portions. Requires MEAL_PARSER=llm + ANTHROPIC_API_KEY."
+          ),
+        image_media_type: z
+          .enum(["image/jpeg", "image/png", "image/webp", "image/gif"])
+          .optional()
+          .describe("MIME type of image_base64 (defaults to image/jpeg)."),
         eaten_at: z
           .number()
           .finite()
@@ -72,17 +83,34 @@ export const app = defineApp({
           .optional()
           .describe("When the meal was eaten, as a Unix timestamp in ms. Defaults to now."),
       }),
-      handler: async ({ description, name, components, eaten_at }) => {
+      handler: async ({ description, name, components, image_base64, image_media_type, eaten_at }) => {
         let comps: ComponentSpec[] = components ?? [];
-        if (comps.length === 0) {
-          if (!description) throw new Error("Provide a `description` (or explicit `components`).");
+        if (comps.length === 0 && image_base64) {
+          // Image path: only the vision-capable LLM parser can turn a photo into components.
+          if (!parserSupportsImage(parser)) {
+            throw new Error(
+              "Image input requires an image-capable LLM parser (set MEAL_PARSER=llm with ANTHROPIC_API_KEY)."
+            );
+          }
+          comps = await parser.parseImage!(image_base64, image_media_type ?? "image/jpeg");
+          if (comps.length === 0) throw new Error("Could not identify any foods in the image.");
+        } else if (comps.length === 0) {
+          if (!description) throw new Error("Provide a `description`, an `image_base64`, or explicit `components`.");
           comps = await parser.parse(description);
           if (comps.length === 0) throw new Error(`Could not identify any foods in "${description}".`);
         }
-        const mealName = name ?? description;
-        if (!mealName) throw new Error("Provide a `name` or a `description`.");
+        const mealName = name ?? description ?? (image_base64 ? "Meal from photo" : undefined);
+        if (!mealName) throw new Error("Provide a `name`, a `description`, or an `image_base64`.");
         return { meal_id: await logMeal(db, mealName, comps, strategy, eaten_at) };
       },
+    },
+    {
+      name: "capabilities",
+      summary:
+        "Server feature flags so clients can adapt their UI — e.g. whether the configured parser " +
+        "supports logging a meal from a photo (image_input).",
+      input: z.object({}),
+      handler: () => ({ image_input: parserSupportsImage(parser) }),
     },
     {
       name: "nutrition_for",
