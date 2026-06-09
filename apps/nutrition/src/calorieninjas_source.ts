@@ -7,11 +7,13 @@
  * so every future log of that component resolves offline ("resolve once, replay forever").
  *
  * API: GET https://api.calorieninjas.com/v1/nutrition?query=<food>, header `X-Api-Key: <key>`.
- * Coverage note: CalorieNinjas returns macros (protein/carbs/fat) but NOT vitamin C or iron, so
- * those two tracked micros are filled as 0 — matching usdaProvider's "complete profile" convention.
+ * Coverage note: CalorieNinjas returns macros plus a handful of micros (fiber, sugar, saturated
+ * fat, sodium, potassium, cholesterol). We emit whatever the item exposes (each with registration
+ * metadata so unknown nutrients auto-register) and simply omit anything it doesn't return — the
+ * gold SUM treats a missing nutrient as zero, so there's no need to force vit C / iron to 0.
  */
 
-import type { NutritionProvider, ProviderResult } from "./nutrition_source.js";
+import type { NutritionProvider, ProviderNutrient, ProviderResult } from "./nutrition_source.js";
 
 const CALORIENINJAS_URL = "https://api.calorieninjas.com/v1/nutrition";
 
@@ -22,7 +24,34 @@ export interface CalorieNinjasItem {
   protein_g: number;
   carbohydrates_total_g: number;
   fat_total_g: number;
+  fiber_g?: number;
+  sugar_g?: number;
+  fat_saturated_g?: number;
+  sodium_mg?: number;
+  potassium_mg?: number;
+  cholesterol_mg?: number;
 }
+
+/** CalorieNinjas item field → our nutrient definition (id + registration metadata). */
+interface CnNutrientDef {
+  field: keyof CalorieNinjasItem;
+  id: string;
+  name: string;
+  kind: "macro" | "micro";
+  unit: string;
+}
+
+const CN_NUTRIENTS: CnNutrientDef[] = [
+  { field: "protein_g",            id: "nut_protein",     name: "Protein",       kind: "macro", unit: "g"  },
+  { field: "carbohydrates_total_g", id: "nut_carbs",      name: "Carbs",         kind: "macro", unit: "g"  },
+  { field: "fat_total_g",          id: "nut_fat",         name: "Fat",           kind: "macro", unit: "g"  },
+  { field: "fiber_g",              id: "nut_fiber",       name: "Fiber",         kind: "macro", unit: "g"  },
+  { field: "sugar_g",              id: "nut_sugars",      name: "Sugars",        kind: "macro", unit: "g"  },
+  { field: "fat_saturated_g",      id: "nut_sat_fat",     name: "Saturated Fat", kind: "macro", unit: "g"  },
+  { field: "sodium_mg",            id: "nut_sodium",      name: "Sodium",        kind: "micro", unit: "mg" },
+  { field: "potassium_mg",         id: "nut_potassium",   name: "Potassium",     kind: "micro", unit: "mg" },
+  { field: "cholesterol_mg",       id: "nut_cholesterol", name: "Cholesterol",   kind: "micro", unit: "mg" },
+];
 
 /** Stable slug so the same food maps to the same ingredient id on every lookup (idempotent cache). */
 function slug(name: string): string {
@@ -60,16 +89,24 @@ export const calorieNinjasProvider: NutritionProvider = {
     const per100 = (v: number) =>
       item.serving_size_g > 0 ? (v / item.serving_size_g) * 100 : v;
 
+    const nutrients: ProviderNutrient[] = [];
+    for (const def of CN_NUTRIENTS) {
+      const raw = item[def.field];
+      if (typeof raw === "number") {
+        nutrients.push({
+          nutrient_id: def.id,
+          amount_per_100g: per100(raw),
+          name: def.name,
+          kind: def.kind,
+          unit: def.unit,
+        });
+      }
+    }
+
     return {
       canonical_name: String(item.name ?? query).toLowerCase(),
       external_id: `cn_${slug(item.name ?? query)}`,
-      nutrients: [
-        { nutrient_id: "nut_protein", amount_per_100g: per100(item.protein_g) },
-        { nutrient_id: "nut_carbs", amount_per_100g: per100(item.carbohydrates_total_g) },
-        { nutrient_id: "nut_fat", amount_per_100g: per100(item.fat_total_g) },
-        { nutrient_id: "nut_vitc", amount_per_100g: 0 }, // not returned by CalorieNinjas
-        { nutrient_id: "nut_iron", amount_per_100g: 0 }, // not returned by CalorieNinjas
-      ],
+      nutrients,
     };
   },
 };

@@ -15,40 +15,55 @@
  * don't require @anthropic-ai/sdk to be installed; it's only needed when this provider is used.
  */
 
-import type { NutritionProvider, ProviderResult } from "./nutrition_source.js";
+import type { NutritionProvider, ProviderNutrient, ProviderResult } from "./nutrition_source.js";
 
-// Structured-output schema: the 5 nutrients we track, per 100g, plus a found flag.
+// Structured-output schema: an OPEN list of nutrients per 100g (not a fixed five), so the model
+// can return the full comprehensive panel it can estimate. Each nutrient carries id/name/kind/unit
+// so fillNutrition auto-registers ones we don't track yet (see nutrition_source.ProviderNutrient).
 const NUTRITION_SCHEMA = {
   type: "object",
   properties: {
     found: { type: "boolean", description: "true if this is a recognizable food" },
     canonical_name: { type: "string", description: "normalized food name, lowercase" },
-    protein_g_per_100g: { type: "number" },
-    carbs_g_per_100g: { type: "number" },
-    fat_g_per_100g: { type: "number" },
-    vitamin_c_mg_per_100g: { type: "number" },
-    iron_mg_per_100g: { type: "number" },
+    nutrients: {
+      type: "array",
+      description: "the comprehensive nutrient panel for this food, per 100g of edible portion",
+      items: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description:
+              "stable snake_case id prefixed nut_, e.g. nut_protein, nut_vitb2, nut_calcium. " +
+              "Reuse these exact ids for the canonical five: nut_protein, nut_carbs, nut_fat, " +
+              "nut_vitc, nut_iron.",
+          },
+          name: { type: "string", description: 'display name, e.g. "Protein", "Vitamin B2"' },
+          kind: { type: "string", enum: ["macro", "micro"], description: "macro or micro" },
+          unit: { type: "string", description: 'unit: "g", "mg", or "mcg"' },
+          amount_per_100g: { type: "number", description: "amount per 100g of edible portion" },
+        },
+        required: ["id", "name", "kind", "unit", "amount_per_100g"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: [
-    "found",
-    "canonical_name",
-    "protein_g_per_100g",
-    "carbs_g_per_100g",
-    "fat_g_per_100g",
-    "vitamin_c_mg_per_100g",
-    "iron_mg_per_100g",
-  ],
+  required: ["found", "canonical_name", "nutrients"],
   additionalProperties: false,
 } as const;
+
+interface LlmNutrientItem {
+  id: string;
+  name: string;
+  kind: "macro" | "micro";
+  unit: string;
+  amount_per_100g: number;
+}
 
 interface LlmNutrition {
   found: boolean;
   canonical_name: string;
-  protein_g_per_100g: number;
-  carbs_g_per_100g: number;
-  fat_g_per_100g: number;
-  vitamin_c_mg_per_100g: number;
-  iron_mg_per_100g: number;
+  nutrients: LlmNutrientItem[];
 }
 
 /** Stable slug so the same food maps to the same ingredient id on every lookup. */
@@ -82,9 +97,15 @@ export const llmProvider: NutritionProvider = {
         format: { type: "json_schema", schema: NUTRITION_SCHEMA },
       },
       system:
-        "You are a nutrition reference. Given a food or dish name, return typical nutrition " +
-        "per 100 grams of the edible portion as cooked/served. Use realistic average values. " +
-        "Set found=false only if the input is not a food.",
+        "You are a nutrition reference. Given a food or dish name, return the typical " +
+        "comprehensive nutrition panel per 100 grams of the edible portion as cooked/served. " +
+        "Include macros (protein, carbs, fat, fiber, sugars, saturated and unsaturated fat) and " +
+        "micros (vitamins A, B-complex such as B1/B2/B3/B6/B12 and folate, C, D, E, K; and " +
+        "minerals like iron, calcium, potassium, sodium, magnesium, zinc) wherever you can give a " +
+        "realistic estimate — omit a nutrient only when it's truly negligible or unknown. Use a " +
+        "stable snake_case id prefixed nut_ for each (e.g. nut_protein, nut_vitb2, nut_calcium), " +
+        "reusing nut_protein/nut_carbs/nut_fat/nut_vitc/nut_iron for the canonical five, with the " +
+        'correct kind (macro/micro) and unit (g/mg/mcg). Set found=false only if the input is not a food.',
       messages: [{ role: "user", content: `Food: "${query}"` }],
     });
 
@@ -93,16 +114,28 @@ export const llmProvider: NutritionProvider = {
     const data = JSON.parse(block.text) as LlmNutrition;
     if (!data.found) return null;
 
+    // Map the open list straight into ProviderNutrient[], carrying metadata so fillNutrition can
+    // auto-register any nutrient we don't already track. Skip malformed entries defensively.
+    const nutrients: ProviderNutrient[] = (data.nutrients ?? [])
+      .filter(
+        (n) =>
+          typeof n?.id === "string" &&
+          n.id.trim() !== "" &&
+          typeof n.amount_per_100g === "number" &&
+          Number.isFinite(n.amount_per_100g)
+      )
+      .map((n) => ({
+        nutrient_id: n.id,
+        amount_per_100g: n.amount_per_100g,
+        name: n.name,
+        kind: n.kind === "macro" || n.kind === "micro" ? n.kind : undefined,
+        unit: n.unit,
+      }));
+
     return {
       canonical_name: (data.canonical_name || query).toLowerCase(),
       external_id: `llm_${slug(query)}`, // deterministic → idempotent caching
-      nutrients: [
-        { nutrient_id: "nut_protein", amount_per_100g: data.protein_g_per_100g },
-        { nutrient_id: "nut_carbs", amount_per_100g: data.carbs_g_per_100g },
-        { nutrient_id: "nut_fat", amount_per_100g: data.fat_g_per_100g },
-        { nutrient_id: "nut_vitc", amount_per_100g: data.vitamin_c_mg_per_100g },
-        { nutrient_id: "nut_iron", amount_per_100g: data.iron_mg_per_100g },
-      ],
+      nutrients,
     };
   },
 };
