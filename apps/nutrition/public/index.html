@@ -32,6 +32,8 @@
     }
     h1 { margin: 0; font-size: 22px; letter-spacing: .2px; }
     .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    header .sub { opacity: 0; visibility: hidden; transition: opacity .15s ease; }
+    header:hover .sub, header:focus-within .sub { opacity: 1; visibility: visible; }
     main { max-width: 880px; margin: 0 auto; padding: 12px 24px 60px; }
 
     .toolbar { display: flex; gap: 10px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
@@ -112,9 +114,9 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>Nutrition</h1>
-    <div class="sub">Chamber · meals served from <code>:8080</code> gold view</div>
+  <header tabindex="0">
+    <h1 id="appName"></h1>
+    <div class="sub" id="appTagline"></div>
   </header>
   <main>
     <div class="toolbar">
@@ -147,6 +149,12 @@
   </dialog>
 
   <script>
+    // ── app identity (rename here) ────────────────────────────────────────
+    const APP_NAME = "Nutrition";
+    const APP_TAGLINE = "Chamber · meals served from the :8080 gold view";
+    document.getElementById("appName").textContent = APP_NAME;
+    document.getElementById("appTagline").textContent = APP_TAGLINE;
+
     // ── tiny API client (unwraps the { result } envelope) ─────────────────
     async function call(op, body = {}) {
       const r = await fetch("/" + op, {
