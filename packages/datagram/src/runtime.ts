@@ -17,7 +17,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -48,38 +48,64 @@ export interface Operation<A = unknown> {
   mutates: boolean;
 }
 
-export interface AppDef {
-  name: string;
-  version: string;
-  operations: Operation[];
-}
-
-export function defineApp(def: AppDef): AppDef {
-  return def;
-}
-
-// ─────────────────────── operation dispatch + bus ─────────────────────────
-
 /** A state-changing operation completed (emitted for any op marked `mutates`). */
 export interface MutationEvent {
   op: string;
   at: number;
 }
 
-const operationBus = new EventEmitter();
-operationBus.setMaxListeners(0);
+/**
+ * The per-app mutation bus key. Each {@link AppDef} carries its OWN EventEmitter
+ * under this symbol, so two datagrams composed in one process never cross-fire
+ * each other's mutation events — an SSE client of app A only sees A's writes.
+ * It is a non-enumerable symbol field so `JSON.stringify(app)` and the UI's
+ * metadata serialization stay clean.
+ */
+const BUS = Symbol("datagram.mutationBus");
 
-/** Subscribe to mutation events. Returns an unsubscribe function. */
-export function onMutation(listener: (evt: MutationEvent) => void): () => void {
-  operationBus.on("mutation", listener);
-  return () => operationBus.off("mutation", listener);
+export interface AppDef {
+  name: string;
+  version: string;
+  operations: Operation[];
+  /** The app's private mutation bus (set by {@link defineApp}); accessed via {@link appBus}. */
+  readonly [BUS]?: EventEmitter;
+}
+
+export function defineApp(def: AppDef): AppDef {
+  const bus = new EventEmitter();
+  bus.setMaxListeners(0);
+  // Non-enumerable so it doesn't leak into JSON/console serializations of the app.
+  Object.defineProperty(def, BUS, { value: bus, enumerable: false });
+  return def;
+}
+
+// ─────────────────────── operation dispatch + bus ─────────────────────────
+
+/** The app's mutation bus, lazily created for apps not built via {@link defineApp}. */
+function appBus(app: AppDef): EventEmitter {
+  let bus = app[BUS];
+  if (!bus) {
+    bus = new EventEmitter();
+    bus.setMaxListeners(0);
+    Object.defineProperty(app, BUS, { value: bus, enumerable: false, configurable: true });
+  }
+  return bus;
+}
+
+/** Subscribe to an app's mutation events. Returns an unsubscribe function. */
+export function onMutation(app: AppDef, listener: (evt: MutationEvent) => void): () => void {
+  const bus = appBus(app);
+  bus.on("mutation", listener);
+  return () => bus.off("mutation", listener);
 }
 
 /**
  * The single dispatch path every front-end runs operations through, so write
  * behavior is identical no matter the entry point. On a successful *mutating*
- * op it emits a {@link MutationEvent}; the HTTP front-end forwards those to SSE
- * clients (GET /events) so embedded live views refresh without polling.
+ * op it emits a {@link MutationEvent} on THIS app's bus; the HTTP front-end
+ * forwards those to that app's SSE clients (GET /events) so embedded live views
+ * refresh without polling. Scoping the bus to `app` keeps two datagrams in one
+ * process isolated — a write on app A never refreshes app B's views.
  *
  * A handler may be synchronous OR return a promise (async handlers resolve a
  * strategy over the network before the atomic write — see the runner). When the
@@ -87,11 +113,11 @@ export function onMutation(listener: (evt: MutationEvent) => void): () => void {
  * only fires once the write has actually committed. A synchronous handler stays
  * synchronous (the return value is not a promise), preserving v0 call sites.
  */
-export function invokeOperation<A>(op: Operation<A>, args: A): unknown {
+export function invokeOperation<A>(app: AppDef, op: Operation<A>, args: A): unknown {
   const result = op.handler(args);
   const emit = () => {
     if (op.mutates) {
-      operationBus.emit("mutation", { op: op.name, at: Date.now() } satisfies MutationEvent);
+      appBus(app).emit("mutation", { op: op.name, at: Date.now() } satisfies MutationEvent);
     }
   };
   if (result instanceof Promise) {
@@ -192,7 +218,7 @@ export async function runCli(app: AppDef, argv: string[]): Promise<void> {
   try {
     // Async handlers (online strategies resolving over the network) return a
     // promise; await resolves it, and is a no-op for synchronous handlers.
-    printResult(await invokeOperation(op, parsed.value));
+    printResult(await invokeOperation(app, op, parsed.value));
   } catch (e) {
     console.error("Error:", e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
@@ -259,7 +285,15 @@ function serveStatic(res: http.ServerResponse, staticDir: string, pathname: stri
     sendJson(res, 403, { error: "Forbidden" });
     return true;
   }
-  if (!existsSync(resolved) || !statSync(resolved).isFile()) return false;
+  // One stat in a try/catch: ENOENT (or any stat failure) → not a file we serve,
+  // so fall through. Avoids the prior existsSync+statSync double stat + TOCTOU gap.
+  let isFile = false;
+  try {
+    isFile = statSync(resolved).isFile();
+  } catch {
+    return false;
+  }
+  if (!isFile) return false;
   const type =
     STATIC_CONTENT_TYPES[path.extname(resolved).toLowerCase()] ?? "application/octet-stream";
   res.writeHead(200, { "content-type": type });
@@ -408,10 +442,15 @@ export function serveHttp(
     operations: app.operations.map((o) => ({ name: o.name, summary: o.summary })),
   });
 
+  // Both are pure functions of `app`, so build each ONCE at setup rather than on
+  // every GET. The OpenAPI doc is pre-serialized for the same reason.
+  const cachedUiHtml = uiHtml(app);
+  const cachedOpenApi = JSON.stringify(openApiDoc(app), null, 2);
+
   // Live push: forward every mutation in this process — the UI's own writes AND
   // gateway/MCP writes routed to these HTTP routes — to all connected SSE clients.
   const sseClients = new Set<http.ServerResponse>();
-  const unsubscribe = onMutation((evt) => {
+  const unsubscribe = onMutation(app, (evt) => {
     const frame = `data: ${JSON.stringify(evt)}\n\n`;
     for (const client of sseClients) {
       try {
@@ -422,11 +461,25 @@ export function serveHttp(
     }
   });
 
+  // One shared 30s heartbeat over ALL SSE clients, not one timer per connection.
+  // It is unref'd so it never keeps the process alive on its own, and cleared
+  // when the server closes.
+  const heartbeat = setInterval(() => {
+    for (const client of sseClients) {
+      try {
+        client.write(": ping\n\n");
+      } catch {
+        /* dropped on its close handler */
+      }
+    }
+  }, 30_000);
+  heartbeat.unref?.();
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/ui") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      return res.end(uiHtml(app));
+      return res.end(cachedUiHtml);
     }
     if (req.method === "GET" && url.pathname === "/events") {
       res.writeHead(200, {
@@ -436,21 +489,14 @@ export function serveHttp(
       });
       res.write(": connected\n\n");
       sseClients.add(res);
-      const heartbeat = setInterval(() => {
-        try {
-          res.write(": ping\n\n");
-        } catch {
-          /* dropped on close */
-        }
-      }, 30_000);
       req.on("close", () => {
-        clearInterval(heartbeat);
         sseClients.delete(res);
       });
       return;
     }
     if (req.method === "GET" && url.pathname === "/openapi.json") {
-      return sendJson(res, 200, openApiDoc(app));
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(cachedOpenApi);
     }
     if (req.method === "GET") {
       if (staticDir) {
@@ -478,7 +524,7 @@ export function serveHttp(
       try {
         // Await covers async handlers (online strategy resolution); a no-op for
         // synchronous ones.
-        const result = await invokeOperation(op, parsed.value);
+        const result = await invokeOperation(app, op, parsed.value);
         return sendJson(res, 200, { result: result ?? null });
       } catch (e) {
         return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
@@ -486,7 +532,10 @@ export function serveHttp(
     }
     sendJson(res, 404, { error: "Not found" });
   });
-  server.on("close", unsubscribe);
+  server.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
   server.listen(port, () =>
     console.error(`[${app.name}] HTTP http://localhost:${port}  (OpenAPI: /openapi.json, UI: /ui)`),
   );
@@ -543,7 +592,7 @@ export function mcpServer(app: AppDef): Server {
     try {
       // Await covers async handlers (online strategy resolution); a no-op for
       // synchronous ones.
-      const result = await invokeOperation(op, parsed.value);
+      const result = await invokeOperation(app, op, parsed.value);
       const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text }] };
     } catch (e) {
@@ -586,8 +635,13 @@ export async function serve(app: AppDef, opts: ServeOptions = {}): Promise<Serve
     closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
   }
   if (opts.mcp) {
-    // Connects the MCP stdio transport; it keeps running alongside the HTTP server.
-    await serveMcp(app);
+    // Connects the MCP stdio transport; it keeps running alongside the HTTP
+    // server. Keep the Server so close() tears the transport down too — otherwise
+    // a "graceful" shutdown would leave the stdio MCP connection open.
+    const mcp = mcpServer(app);
+    await mcp.connect(new StdioServerTransport());
+    console.error(`[${app.name}] MCP (stdio) ready — ${app.operations.length} tools`);
+    closers.push(() => mcp.close());
   }
   return {
     async close() {
