@@ -23,6 +23,7 @@ import { Access, Effect, access, effect } from "@chamber/proto/chamber/v1/option
 import type { DataHandle } from "./data.js";
 import { protoMessageToJsonSchema } from "./jsonschema.js";
 import type { Operation, ValidateResult } from "./runtime.js";
+import { humanize, snakeCase } from "./strings.js";
 
 /** What a handler receives alongside its validated, decoded request. */
 export interface HandlerContext {
@@ -73,17 +74,6 @@ export interface RunnerBackend {
   readHandle(): DataHandle;
   writeHandle(): DataHandle;
   transaction<T>(fn: () => T): T;
-}
-
-/** snake_case a proto method name: `LogMeal` → `log_meal`, `NutritionFor` → `nutrition_for`. */
-function snakeCase(name: string): string {
-  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-}
-
-/** Humanize a method name into a default summary: `NutritionFor` → "Nutrition for". */
-function humanize(name: string): string {
-  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** Build a `validate` fn that decodes a JSON body into the method's request message via proto-es. */

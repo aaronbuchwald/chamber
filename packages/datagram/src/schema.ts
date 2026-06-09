@@ -17,6 +17,7 @@ import { type DescMessage, type DescService, ScalarType } from "@bufbuild/protob
 import { getOption, hasOption } from "@bufbuild/protobuf";
 import { transform } from "@chamber/proto/chamber/v1/options_pb";
 import type { Row, TableSchema } from "./data.js";
+import { pluralize, snakeCase } from "./strings.js";
 
 /** A column in a derived base-table schema. */
 export interface ColumnDef {
@@ -51,15 +52,19 @@ export interface GoldView {
  * declares its DDL columns + idempotent seed rows; the backend creates and
  * seeds it on open.
  */
-export interface ReferenceTable {
+export interface ReferenceTable<R extends Row = Row> {
   kind: "reference";
   name: string;
   /** Column definitions in declaration order. */
   columns: ColumnDef[];
   /** Optional composite primary key (column names); overrides per-column PK. */
   primaryKey?: string[];
-  /** Idempotent seed rows (inserted with INSERT OR IGNORE). */
-  seed: Row[];
+  /**
+   * Idempotent seed rows (inserted with INSERT OR IGNORE). Generic over the row
+   * shape `R` so an app can pass its own structurally-`Row`-compatible row type
+   * (e.g. nutrition's `ReferenceRow`) without an `as unknown as` bridge cast.
+   */
+  seed: R[];
 }
 
 /** The full derived schema: Bronze tables, Gold views, and reference tables. */
@@ -149,15 +154,7 @@ function goldOf(msg: DescMessage): GoldView {
 
 /** snake_case table name for a message (e.g. `MealComponent` → `meal_components`). */
 export function tableName(msg: DescMessage): string {
-  const snake = msg.name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-  return pluralize(snake);
-}
-
-/** Naive English pluralization, sufficient for the v0 nutrition names. */
-function pluralize(s: string): string {
-  if (s.endsWith("s")) return s;
-  if (s.endsWith("y")) return `${s.slice(0, -1)}ies`;
-  return `${s}s`;
+  return pluralize(snakeCase(msg.name));
 }
 
 /**
