@@ -12,12 +12,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Message } from "@bufbuild/protobuf";
 import {
   type AppDef,
   type Handlers,
+  type PreparedHandler,
   type ReferenceTable,
   type Summaries,
   defineApp,
@@ -31,23 +32,18 @@ import type {
   NutritionForRequest,
 } from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
 import { NutritionService } from "@chamber/datagram/gen/nutrition/v1/nutrition_pb";
+import { type NutritionStrategy, type ReferenceRow, offlineStrategy } from "./strategies.js";
 
 /** The app root (parent of src/), used to resolve seed + transform files. */
 export const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface ComponentNutrientRow {
-  component: string;
-  nutrient: string;
-  kind: string;
-  unit: string;
-  amount_per_100g: number;
-}
-
-/** The seeded reference matrix: component → per-100g amount of each nutrient. */
-export function referenceTable(): ReferenceTable {
-  const seed = JSON.parse(
-    readFileSync(resolve(APP_DIR, "seed/component_nutrients.json"), "utf8"),
-  ) as ComponentNutrientRow[];
+/**
+ * The reference matrix DDL: component → per-100g amount of each nutrient. Its seed
+ * comes from the active {@link NutritionStrategy} (`strategy.seed ?? []`): offline
+ * supplies the bundled rows; online strategies supply none, so the table is created
+ * EMPTY and every component is resolved dynamically on first use.
+ */
+export function referenceTable(seed: ReferenceRow[] = []): ReferenceTable {
   return {
     kind: "reference",
     name: "component_nutrients",
@@ -70,10 +66,10 @@ interface ComponentSpec {
 }
 
 /**
- * Offline meal parsing (v0 is offline — no LLM / external lookup). Explicit
- * `components` win; otherwise the whole description is treated as a single 100g
- * component (the passthrough path ported from the original app). Nutrition for a
- * component is then whatever the seeded reference data covers.
+ * Meal parsing. Explicit `components` win; otherwise the whole description is
+ * treated as a single 100g component (the passthrough path ported from the
+ * original app). Nutrition for a component is then whatever the active strategy
+ * supplies — the offline seed, or a dynamic resolution (CalorieNinjas / LLM).
  */
 function parseMeal(req: LogMealRequest): { name: string; components: ComponentSpec[] } {
   const name = (req.name || req.description || "meal").trim();
@@ -93,6 +89,12 @@ export interface BuildOptions {
   dbPath?: string;
   /** Override the service descriptor (tests flip access to READ_WRITE/READ). */
   service?: typeof NutritionService;
+  /**
+   * How a component's nutrient values are populated. Defaults to {@link offlineStrategy}
+   * (deterministic, keyless, pre-seeded). An online strategy (CalorieNinjas / LLM) carries
+   * no seed, so `component_nutrients` starts EMPTY and is filled by `resolve` on first use.
+   */
+  strategy?: NutritionStrategy;
 }
 
 /** The assembled nutrition datagram: its app definition plus a close() handle. */
@@ -113,18 +115,64 @@ const SUMMARIES: Summaries = {
  */
 export function buildNutritionDatagram(opts: BuildOptions = {}): NutritionDatagram {
   const service = opts.service ?? NutritionService;
-  const schema = deriveSchema(service, [referenceTable()]);
+  const strategy = opts.strategy ?? offlineStrategy(APP_DIR);
+  // HARD INVARIANT: the reference table is seeded ONLY from the strategy. An online
+  // strategy supplies no seed, so `component_nutrients` is created EMPTY — the offline
+  // seed JSON is never loaded on that path.
+  const schema = deriveSchema(service, [referenceTable(strategy.seed ?? [])]);
   const backend = openSqlite(schema, {
     path: opts.dbPath ?? ":memory:",
     transformDir: APP_DIR,
   });
 
-  const handlers: Handlers = {
-    logMeal: (req, { data }) => {
+  /** What the async prepare phase resolved for the synchronous commit. */
+  interface LoggedMeal {
+    name: string;
+    eatenAt: number;
+    components: ComponentSpec[];
+    /** Newly-resolved reference rows to cache (empty for the offline strategy). */
+    newRows: ReferenceRow[];
+  }
+
+  // Resolve the components a meal needs that aren't already cached, OUTSIDE any
+  // transaction (this is the async/network phase). Idempotent: a component already
+  // present in `component_nutrients` is never re-resolved ("resolve once, replay
+  // forever"). Returns the rows to cache in the subsequent atomic write.
+  const resolveNewRows = async (components: ComponentSpec[]): Promise<ReferenceRow[]> => {
+    const resolve = strategy.resolve;
+    if (!resolve) return [];
+    const read = backend.readHandle();
+    const newRows: ReferenceRow[] = [];
+    for (const component of new Set(components.map((c) => c.component))) {
+      const existing = read.query("component_nutrients", { eq: ["component", component] });
+      if (existing.length > 0) continue; // seeded or previously cached → skip
+      const resolved = await resolve(component); // network — outside the txn
+      if (resolved) newRows.push(...resolved); // null → component just won't contribute
+    }
+    return newRows;
+  };
+
+  // Two-phase logMeal: `prepare` resolves unknown components over the network
+  // OUTSIDE the transaction; `commit` does the atomic DB writes synchronously
+  // INSIDE it. With the OFFLINE strategy (no `resolve`) prepare stays SYNCHRONOUS
+  // (returns a value, not a promise), so the offline path is fully synchronous and
+  // keyless — identical to v0.
+  const logMeal: PreparedHandler<Message> = {
+    prepare(req): LoggedMeal | Promise<LoggedMeal> {
       const r = req as LogMealRequest;
       const { name, components } = parseMeal(r);
-      const mealId = randomUUID();
       const eatenAt = r.eatenAt !== 0n ? Number(r.eatenAt) : Date.now();
+      if (!strategy.resolve) return { name, eatenAt, components, newRows: [] };
+      return resolveNewRows(components).then((newRows) => ({
+        name,
+        eatenAt,
+        components,
+        newRows,
+      }));
+    },
+    commit(prepared, _r, { data }) {
+      const { name, eatenAt, components, newRows } = prepared as LoggedMeal;
+      const mealId = randomUUID();
       data.insert("meals", { id: mealId, name, eaten_at: eatenAt });
       for (const c of components) {
         data.insert("meal_components", {
@@ -134,8 +182,22 @@ export function buildNutritionDatagram(opts: BuildOptions = {}): NutritionDatagr
           qty_g: c.qty_g,
         });
       }
+      // Cache the freshly-resolved reference rows in the same atomic write.
+      for (const row of newRows) {
+        data.insert("component_nutrients", {
+          component: row.component,
+          nutrient: row.nutrient,
+          kind: row.kind,
+          unit: row.unit,
+          amount_per_100g: row.amount_per_100g,
+        });
+      }
       return { meal_id: mealId };
     },
+  };
+
+  const handlers: Handlers = {
+    logMeal,
 
     nutritionFor: (req, { data }) => {
       const r = req as NutritionForRequest;
