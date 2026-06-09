@@ -13,6 +13,7 @@
  *     CLI is a one-shot client, not a long-running controller.)
  */
 
+import { parseArgs } from "node:util";
 import { runCli, serve } from "@chamber/datagram";
 import { APP_DIR, buildNutritionDatagram } from "./service.js";
 import { selectStrategy } from "./strategies.js";
@@ -26,11 +27,32 @@ const { app, close } = buildNutritionDatagram({
 });
 
 if (cmd === "serve") {
-  const portArg = rest[rest.indexOf("--port") + 1];
-  const port = rest.includes("--port") && portArg ? Number(portArg) : undefined;
+  // Parse the serve flags with node:util parseArgs: --mcp is a boolean, --port
+  // takes a string we coerce to a number. A bare `--port` (or a non-numeric
+  // value) is an explicit error rather than a silent fall-back to the default.
+  let mcp = false;
+  let port: number | undefined;
+  try {
+    const { values } = parseArgs({
+      args: rest,
+      options: { mcp: { type: "boolean" }, port: { type: "string" } },
+      allowPositionals: false,
+    });
+    mcp = values.mcp ?? false;
+    if (values.port !== undefined) {
+      port = Number(values.port);
+      if (!Number.isFinite(port) || port < 0) {
+        throw new Error(`--port requires a numeric value (got "${values.port}")`);
+      }
+    }
+  } catch (e) {
+    console.error(`Invalid serve arguments: ${e instanceof Error ? e.message : String(e)}`);
+    close();
+    process.exit(1);
+  }
   const handle = await serve(app, {
-    http: port ? { port } : {},
-    mcp: rest.includes("--mcp"),
+    http: port !== undefined ? { port } : {},
+    mcp,
   });
   // Long-running: shut the controllers and the backend down cleanly on signals.
   for (const sig of ["SIGINT", "SIGTERM"] as const) {

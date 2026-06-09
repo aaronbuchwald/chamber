@@ -19,11 +19,16 @@
 
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import type { Row } from "@chamber/datagram";
 import { calorieNinjasStrategy } from "./calorieninjas_strategy.js";
 import { llmStrategy } from "./llm_strategy.js";
 
-/** One per-100g reference row: the shape the Gold view joins on. */
-export interface ReferenceRow {
+/**
+ * One per-100g reference row: the shape the Gold view joins on. Extends the
+ * SDK's {@link Row} (its index signature) so a `ReferenceRow[]` is directly
+ * assignable to `ReferenceTable<ReferenceRow>["seed"]` with no bridge cast.
+ */
+export interface ReferenceRow extends Row {
   component: string;
   nutrient: string;
   kind: string;

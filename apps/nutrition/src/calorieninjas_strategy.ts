@@ -13,6 +13,7 @@
  * CalorieNinjas reports values for `serving_size_g`; we normalize to per-100g.
  */
 
+import { humanizeField } from "@chamber/datagram";
 import type { NutritionStrategy, ReferenceRow } from "./strategies.js";
 
 const CALORIENINJAS_URL = "https://api.calorieninjas.com/v1/nutrition";
@@ -46,16 +47,6 @@ function unitAndKind(field: string): { unit: string; kind: "macro" | "micro" } |
   return null; // not a recognizable nutrient amount → skip
 }
 
-/** Humanize a field key into a display name: `fat_saturated_g` → "Fat Saturated". */
-function humanize(field: string): string {
-  return field
-    .replace(/_(g|mg|mcg)$/, "")
-    .split("_")
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
-
 /** The CalorieNinjas strategy: no seed; resolve via the live API, taking every nutrient it returns. */
 export const calorieNinjasStrategy: NutritionStrategy = {
   name: "calorieninjas",
@@ -75,9 +66,15 @@ export const calorieNinjasStrategy: NutritionStrategy = {
     const item = data.items?.[0];
     if (!item) return null;
 
-    // Normalize the returned serving to per-100g (CalorieNinjas defaults to 100g for a bare name).
-    const servingG = typeof item.serving_size_g === "number" ? item.serving_size_g : 0;
-    const per100 = (v: number) => (servingG > 0 ? (v / servingG) * 100 : v);
+    // Normalize the returned serving to per-100g. A non-positive or non-numeric
+    // serving_size_g makes the per-100g scale undefined: passing raw per-serving
+    // values through unscaled would permanently cache WRONG per-100g rows (and
+    // "resolve once" makes that mistake sticky). Treat it as unresolvable instead.
+    const servingG = item.serving_size_g;
+    if (typeof servingG !== "number" || !Number.isFinite(servingG) || servingG <= 0) {
+      return null;
+    }
+    const per100 = (v: number) => (v / servingG) * 100;
 
     const rows: ReferenceRow[] = [];
     for (const [field, raw] of Object.entries(item)) {
@@ -87,7 +84,7 @@ export const calorieNinjasStrategy: NutritionStrategy = {
       if (!uk) continue;
       rows.push({
         component,
-        nutrient: DISPLAY_NAMES[field] ?? humanize(field),
+        nutrient: DISPLAY_NAMES[field] ?? humanizeField(field),
         kind: uk.kind,
         unit: uk.unit,
         amount_per_100g: per100(raw),

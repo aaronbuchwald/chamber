@@ -43,7 +43,7 @@ export const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * supplies the bundled rows; online strategies supply none, so the table is created
  * EMPTY and every component is resolved dynamically on first use.
  */
-export function referenceTable(seed: ReferenceRow[] = []): ReferenceTable {
+export function referenceTable(seed: ReferenceRow[] = []): ReferenceTable<ReferenceRow> {
   return {
     kind: "reference",
     name: "component_nutrients",
@@ -55,7 +55,7 @@ export function referenceTable(seed: ReferenceRow[] = []): ReferenceTable {
       { name: "amount_per_100g", affinity: "REAL", primaryKey: false },
     ],
     primaryKey: ["component", "nutrient"],
-    seed: seed as unknown as ReferenceTable["seed"],
+    seed,
   };
 }
 
@@ -142,14 +142,16 @@ export function buildNutritionDatagram(opts: BuildOptions = {}): NutritionDatagr
     const resolve = strategy.resolve;
     if (!resolve) return [];
     const read = backend.readHandle();
-    const newRows: ReferenceRow[] = [];
-    for (const component of new Set(components.map((c) => c.component))) {
-      const existing = read.query("component_nutrients", { eq: ["component", component] });
-      if (existing.length > 0) continue; // seeded or previously cached → skip
-      const resolved = await resolve(component); // network — outside the txn
-      if (resolved) newRows.push(...resolved); // null → component just won't contribute
-    }
-    return newRows;
+    // Dedup, then drop components already cached/seeded ("resolve once, replay
+    // forever"). The remaining distinct components are independent, so resolve
+    // them in PARALLEL — a 3-component meal pays 1× network RTT, not 3× serial.
+    const uncached = [...new Set(components.map((c) => c.component))].filter(
+      (component) =>
+        read.query("component_nutrients", { eq: ["component", component] }).length === 0,
+    );
+    const resolved = await Promise.all(uncached.map((component) => resolve(component)));
+    // null → component just won't contribute; flatten the rest into the cache set.
+    return resolved.flatMap((rows) => rows ?? []);
   };
 
   // Two-phase logMeal: `prepare` resolves unknown components over the network
@@ -183,14 +185,23 @@ export function buildNutritionDatagram(opts: BuildOptions = {}): NutritionDatagr
         });
       }
       // Cache the freshly-resolved reference rows in the same atomic write.
+      // `onConflict: "ignore"` makes this idempotent: two concurrent log_meal
+      // requests for the SAME novel component each resolve outside the txn and
+      // both reach here, so without IGNORE the second commit would hit the
+      // (component, nutrient) composite-PK UNIQUE constraint and roll the whole
+      // meal back. INSERT OR IGNORE dedups the reference row instead.
       for (const row of newRows) {
-        data.insert("component_nutrients", {
-          component: row.component,
-          nutrient: row.nutrient,
-          kind: row.kind,
-          unit: row.unit,
-          amount_per_100g: row.amount_per_100g,
-        });
+        data.insert(
+          "component_nutrients",
+          {
+            component: row.component,
+            nutrient: row.nutrient,
+            kind: row.kind,
+            unit: row.unit,
+            amount_per_100g: row.amount_per_100g,
+          },
+          { onConflict: "ignore" },
+        );
       }
       return { meal_id: mealId };
     },
