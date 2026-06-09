@@ -30,8 +30,37 @@ export interface HandlerContext {
   data: DataHandle;
 }
 
-/** A user handler over the dataset. Synchronous (sqlite transactions are sync). */
-export type Handler<Req extends Message = Message> = (req: Req, ctx: HandlerContext) => unknown;
+/**
+ * A simple, synchronous user handler over the dataset. The whole body runs
+ * inside the per-write atomic transaction (for writes); sqlite transactions are
+ * synchronous, so this stays synchronous. This is the v0 shape and remains fully
+ * supported.
+ */
+export type SyncHandler<Req extends Message = Message> = (req: Req, ctx: HandlerContext) => unknown;
+
+/**
+ * A two-phase handler that splits NETWORK from the atomic DB write.
+ *
+ * `prepare(req)` runs FIRST and OUTSIDE any transaction — it may be async and do
+ * network I/O (e.g. resolve a nutrition strategy). Its resolved value is then
+ * handed to `commit(prepared, req, ctx)`, which runs synchronously INSIDE the
+ * per-write atomic transaction and does only DB mutations. This is how an
+ * online strategy resolves-then-writes without holding a transaction open across
+ * a network call. For reads, `prepare` is skipped and `commit` runs against a
+ * read handle.
+ */
+export interface PreparedHandler<Req extends Message = Message, P = unknown> {
+  prepare?: (req: Req) => Promise<P> | P;
+  commit: (prepared: P, req: Req, ctx: HandlerContext) => unknown;
+}
+
+/** A user handler: either a plain sync function or a two-phase prepare/commit handler. */
+export type Handler<Req extends Message = Message> = SyncHandler<Req> | PreparedHandler<Req>;
+
+/** Narrow a {@link Handler} to the two-phase {@link PreparedHandler} shape. */
+function isPreparedHandler(h: Handler): h is PreparedHandler {
+  return typeof h === "object" && h !== null && typeof (h as PreparedHandler).commit === "function";
+}
 
 /** Per-method handler map, keyed by the proto method's `localName` (e.g. `logMeal`). */
 export type Handlers = Record<string, Handler>;
@@ -93,13 +122,30 @@ export function protoToOperations(
 
     const wrapped = (req: Message): unknown => {
       // SINGLE-POINT ACCESS GUARD: a WRITE against a non-READ_WRITE dataset is
-      // forbidden, enforced here and nowhere else.
+      // forbidden, enforced here and nowhere else. Checked before any network
+      // resolution so a read-only dataset never even reaches a strategy lookup.
       if (mutates && serviceAccess !== Access.READ_WRITE) {
         throw new Error("forbidden: read-only dataset");
       }
+
+      if (isPreparedHandler(handler)) {
+        // Two-phase: resolve OUTSIDE the transaction (may be async / network),
+        // then commit the synchronous DB writes INSIDE the atomic transaction.
+        const runCommit = (prepared: unknown): unknown => {
+          const ctx = { data: mutates ? backend.writeHandle() : backend.readHandle() };
+          const doCommit = () => handler.commit(prepared, req, ctx);
+          return mutates ? backend.transaction(doCommit) : doCommit();
+        };
+        if (!handler.prepare) return runCommit(undefined);
+        const prepared = handler.prepare(req);
+        // Only await when prepare actually returned a promise — a fully sync
+        // prepared handler stays synchronous (so sync call sites keep working).
+        return prepared instanceof Promise ? prepared.then(runCommit) : runCommit(prepared);
+      }
+
+      // Plain sync handler: the whole body runs inside the atomic transaction
+      // (for writes), exactly as in v0.
       if (mutates) {
-        // Per-action ATOMIC TRANSACTION: the handler's inserts commit together
-        // or roll back together if it throws.
         return backend.transaction(() => handler(req, { data: backend.writeHandle() }));
       }
       return handler(req, { data: backend.readHandle() });

@@ -37,7 +37,12 @@ export interface Operation<A = unknown> {
   jsonSchema: JsonSchema;
   /** Validate a raw JSON body into the handler's argument type (proto-es fromJson under the hood). */
   validate: (body: unknown) => ValidateResult<A>;
-  /** Implementation over the dataset. Synchronous in v0 (sqlite transactions are sync). */
+  /**
+   * Implementation over the dataset. Returns the handler's result directly, or a
+   * promise of it when the handler resolves a strategy over the network before
+   * its atomic write (see the runner's two-phase handlers). Synchronous handlers
+   * return a plain value, so the v0 sync dispatch path is unchanged.
+   */
   handler: (args: A) => unknown;
   /** Whether this op changes state. Mutating ops broadcast on the bus so live views refresh. */
   mutates: boolean;
@@ -75,12 +80,27 @@ export function onMutation(listener: (evt: MutationEvent) => void): () => void {
  * behavior is identical no matter the entry point. On a successful *mutating*
  * op it emits a {@link MutationEvent}; the HTTP front-end forwards those to SSE
  * clients (GET /events) so embedded live views refresh without polling.
+ *
+ * A handler may be synchronous OR return a promise (async handlers resolve a
+ * strategy over the network before the atomic write — see the runner). When the
+ * result is a promise we await it before emitting the mutation, so the event
+ * only fires once the write has actually committed. A synchronous handler stays
+ * synchronous (the return value is not a promise), preserving v0 call sites.
  */
 export function invokeOperation<A>(op: Operation<A>, args: A): unknown {
   const result = op.handler(args);
-  if (op.mutates) {
-    operationBus.emit("mutation", { op: op.name, at: Date.now() } satisfies MutationEvent);
+  const emit = () => {
+    if (op.mutates) {
+      operationBus.emit("mutation", { op: op.name, at: Date.now() } satisfies MutationEvent);
+    }
+  };
+  if (result instanceof Promise) {
+    return result.then((value) => {
+      emit();
+      return value;
+    });
   }
+  emit();
   return result;
 }
 
@@ -149,7 +169,7 @@ function printHelp(app: AppDef): void {
   }
 }
 
-export function runCli(app: AppDef, argv: string[]): void {
+export async function runCli(app: AppDef, argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
     printHelp(app);
@@ -170,7 +190,9 @@ export function runCli(app: AppDef, argv: string[]): void {
     return;
   }
   try {
-    printResult(invokeOperation(op, parsed.value));
+    // Async handlers (online strategies resolving over the network) return a
+    // promise; await resolves it, and is a no-op for synchronous handlers.
+    printResult(await invokeOperation(op, parsed.value));
   } catch (e) {
     console.error("Error:", e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
@@ -454,7 +476,9 @@ export function serveHttp(
       if (!parsed.ok)
         return sendJson(res, 400, { error: "Invalid arguments", issues: parsed.errors });
       try {
-        const result = invokeOperation(op, parsed.value);
+        // Await covers async handlers (online strategy resolution); a no-op for
+        // synchronous ones.
+        const result = await invokeOperation(op, parsed.value);
         return sendJson(res, 200, { result: result ?? null });
       } catch (e) {
         return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
@@ -499,7 +523,7 @@ export function mcpServer(app: AppDef): Server {
       inputSchema: op.jsonSchema as Record<string, unknown>,
     })),
   }));
-  server.setRequestHandler(CallToolRequestSchema, (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const op = app.operations.find((o) => o.name === request.params.name);
     if (!op) {
       return {
@@ -517,7 +541,9 @@ export function mcpServer(app: AppDef): Server {
       };
     }
     try {
-      const result = invokeOperation(op, parsed.value);
+      // Await covers async handlers (online strategy resolution); a no-op for
+      // synchronous ones.
+      const result = await invokeOperation(op, parsed.value);
       const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text }] };
     } catch (e) {

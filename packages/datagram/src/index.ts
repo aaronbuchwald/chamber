@@ -22,8 +22,10 @@ export {
   type Handler,
   type HandlerContext,
   type Handlers,
+  type PreparedHandler,
   type RunnerBackend,
   type Summaries,
+  type SyncHandler,
   protoToOperations,
 } from "./runner.js";
 export {
