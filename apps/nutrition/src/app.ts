@@ -9,7 +9,7 @@
 import { defineApp, z, arrayOf } from "../../../packages/appkit/src/index.js";
 import { openDb } from "./db.js";
 import { seedReferenceData } from "./seed.js";
-import { logMeal, getMealNutrition, listMeals, type ComponentSpec } from "./operations.js";
+import { logMeal, getMealNutrition, listMeals, reprocessMeals, type ComponentSpec } from "./operations.js";
 import { selectStrategy } from "./strategies.js";
 import { selectParser } from "./meal_parser.js";
 
@@ -83,6 +83,31 @@ export const app = defineApp({
         if (!mealName) throw new Error("Provide a `name` or a `description`.");
         return { meal_id: await logMeal(db, mealName, comps, strategy, eaten_at) };
       },
+    },
+    {
+      name: "reprocess_meals",
+      mutates: true,
+      summary:
+        "Re-run the currently configured nutrition strategy over the components of meals in a date " +
+        "range (or full history if no range is given) and refresh their cached nutrition. Unlike " +
+        "log_meal's resolve-once caching, this re-resolves every in-range component, surfacing " +
+        "changed values and newly-available nutrients. Returns { meals_scanned, components_relooked, " +
+        "nutrients_added }.",
+      input: z.object({
+        from: z
+          .number()
+          .finite()
+          .positive()
+          .optional()
+          .describe("Start of range, inclusive, as a Unix timestamp in ms. Omit for no lower bound."),
+        to: z
+          .number()
+          .finite()
+          .positive()
+          .optional()
+          .describe("End of range, inclusive, as a Unix timestamp in ms. Omit for no upper bound."),
+      }),
+      handler: async ({ from, to }) => reprocessMeals(db, strategy, { from, to }),
     },
     {
       name: "nutrition_for",

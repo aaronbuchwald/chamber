@@ -87,7 +87,7 @@ function freshDb(): Database.Database {
 
 // We import at top level — tsx will handle TS resolution for us.
 import { seedReferenceData } from "../src/seed.js";
-import { logMeal, getMealNutrition, listMeals } from "../src/operations.js";
+import { logMeal, getMealNutrition, listMeals, reprocessMeals } from "../src/operations.js";
 import type { NutritionProvider, ProviderResult } from "../src/nutrition_source.js";
 import { app } from "../src/app.js";
 import { z } from "../../../packages/appkit/src/index.js";
@@ -359,6 +359,222 @@ describe("logMeal strategy resolution (offline, fake strategy)", () => {
     // No strategy passed → localProvider → no external lookup, so an unseeded component is empty.
     const id = await logMeal(db, "Mythical platter", [{ component: "unicorn meat", qty_g: 100 }]);
     assert.equal(getMealNutrition(db, id).length, 0, "local strategy resolves only seeded reference data");
+  });
+});
+
+describe("dynamic comprehensive nutrient set", () => {
+  it("auto-registers a brand-new nutrient (Vitamin B2) for the meal that has it, while older meals stay zero", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+
+    // Strategy that returns ONLY the seeded five (no metadata) for one food, and a richer panel
+    // (including a nutrient we don't track yet — nut_vitb2) for another.
+    const strategy: NutritionProvider = {
+      async lookup(query: string): Promise<ProviderResult | null> {
+        if (query === "plain rice") {
+          return {
+            canonical_name: "plain rice",
+            external_id: "rice-1",
+            nutrients: [
+              { nutrient_id: "nut_protein", amount_per_100g: 2 },
+              { nutrient_id: "nut_carbs", amount_per_100g: 28 },
+              { nutrient_id: "nut_fat", amount_per_100g: 0 },
+            ],
+          };
+        }
+        if (query === "fortified cereal") {
+          return {
+            canonical_name: "fortified cereal",
+            external_id: "cereal-1",
+            nutrients: [
+              { nutrient_id: "nut_protein", amount_per_100g: 8 },
+              { nutrient_id: "nut_carbs", amount_per_100g: 80 },
+              // brand-new nutrient with full registration metadata
+              { nutrient_id: "nut_vitb2", name: "Vitamin B2", kind: "micro", unit: "mg", amount_per_100g: 0.3 },
+            ],
+          };
+        }
+        return null;
+      },
+    };
+
+    // Log an OLDER meal first — it never had B2.
+    const oldMeal = await logMeal(db, "Rice bowl", [{ component: "plain rice", qty_g: 100 }], strategy);
+
+    // B2 is not registered yet (only the seeded five exist).
+    const before = db.prepare("SELECT 1 FROM nutrients WHERE id = 'nut_vitb2'").get();
+    assert.equal(before, undefined, "nut_vitb2 must not exist before any food introduces it");
+
+    // Log a NEWER meal whose provider returns B2 — it auto-registers.
+    const newMeal = await logMeal(db, "Cereal", [{ component: "fortified cereal", qty_g: 100 }], strategy);
+
+    const registered = db.prepare("SELECT name, kind, unit FROM nutrients WHERE id = 'nut_vitb2'").get() as any;
+    assert.ok(registered, "nut_vitb2 should be auto-registered after the cereal meal");
+    assert.equal(registered.name, "Vitamin B2");
+    assert.equal(registered.kind, "micro");
+    assert.equal(registered.unit, "mg");
+
+    // The cereal meal shows B2 (100g * 0.3/100 = 0.3mg)…
+    const newRows = getMealNutrition(db, newMeal);
+    const b2 = newRows.find((r) => r.nutrient === "Vitamin B2");
+    assert.ok(b2, "cereal meal should have a Vitamin B2 row");
+    assert.ok(Math.abs(b2!.amount - 0.3) < 1e-9, `expected B2 ≈ 0.3mg, got ${b2!.amount}`);
+
+    // …but the older rice meal has NO B2 row (treated as zero — excluded from the SUM).
+    const oldRows = getMealNutrition(db, oldMeal);
+    assert.ok(!oldRows.some((r) => r.nutrient === "Vitamin B2"), "older meal must show no Vitamin B2 row (zero)");
+  });
+
+  it("skips an unknown nutrient that lacks registration metadata", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+
+    const strategy: NutritionProvider = {
+      async lookup(): Promise<ProviderResult | null> {
+        return {
+          canonical_name: "mystery food",
+          external_id: "mystery-1",
+          nutrients: [
+            { nutrient_id: "nut_protein", amount_per_100g: 5 },
+            // unknown id with NO metadata → cannot register → skipped
+            { nutrient_id: "nut_unobtanium", amount_per_100g: 99 },
+          ],
+        };
+      },
+    };
+
+    const id = await logMeal(db, "Mystery", [{ component: "mystery food", qty_g: 100 }], strategy);
+    assert.equal(db.prepare("SELECT 1 FROM nutrients WHERE id = 'nut_unobtanium'").get(), undefined);
+    const rows = getMealNutrition(db, id);
+    assert.ok(rows.some((r) => r.nutrient === "Protein"), "Protein still resolves");
+    assert.ok(!rows.some((r) => (r as any).nutrient_id === "nut_unobtanium"), "unregisterable nutrient is dropped");
+  });
+});
+
+describe("reprocessMeals", () => {
+  // A mutable fake whose output we swap between the initial log and the reprocess pass.
+  function makeMutableStrategy() {
+    const state: { result: ProviderResult | null } = { result: null };
+    const lookups: string[] = [];
+    const strategy: NutritionProvider = {
+      async lookup(query: string): Promise<ProviderResult | null> {
+        lookups.push(query);
+        return state.result;
+      },
+    };
+    return { strategy, state, lookups };
+  }
+
+  it("re-resolves components over a range with the current strategy, updating values and adding nutrients", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    const { strategy, state, lookups } = makeMutableStrategy();
+
+    // Initial resolution: protein 10, no B2.
+    state.result = {
+      canonical_name: "lab meat",
+      external_id: "lab-1",
+      nutrients: [{ nutrient_id: "nut_protein", amount_per_100g: 10 }],
+    };
+    const t = 1_000_000_000_000; // fixed timestamp in range
+    const meal = await logMeal(db, "Lab plate", [{ component: "lab meat", qty_g: 100 }], strategy, t);
+
+    let rows = getMealNutrition(db, meal);
+    assert.ok(Math.abs(rows.find((r) => r.nutrient === "Protein")!.amount - 10) < 1e-9);
+    assert.ok(!rows.some((r) => r.nutrient === "Vitamin B2"));
+    const lookupsAfterLog = lookups.length;
+
+    // Strategy now returns updated protein AND a new nutrient.
+    state.result = {
+      canonical_name: "lab meat",
+      external_id: "lab-1",
+      nutrients: [
+        { nutrient_id: "nut_protein", amount_per_100g: 25 },
+        { nutrient_id: "nut_vitb2", name: "Vitamin B2", kind: "micro", unit: "mg", amount_per_100g: 0.5 },
+      ],
+    };
+
+    const summary = await reprocessMeals(db, strategy, { from: t - 1000, to: t + 1000 });
+    assert.equal(summary.meals_scanned, 1, "one meal in range");
+    assert.equal(summary.components_relooked, 1, "one component re-resolved");
+    assert.equal(summary.nutrients_added, 1, "Vitamin B2 newly registered");
+    assert.ok(lookups.length > lookupsAfterLog, "reprocess bypasses cache and re-looks-up the component");
+
+    rows = getMealNutrition(db, meal);
+    const protein = rows.find((r) => r.nutrient === "Protein");
+    assert.ok(protein && Math.abs(protein.amount - 25) < 1e-9, `expected updated Protein ≈ 25g, got ${protein?.amount}`);
+    const b2 = rows.find((r) => r.nutrient === "Vitamin B2");
+    assert.ok(b2 && Math.abs(b2.amount - 0.5) < 1e-9, `expected new B2 ≈ 0.5mg, got ${b2?.amount}`);
+  });
+
+  it("processes full history when no range is given", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    const { strategy, state } = makeMutableStrategy();
+
+    state.result = {
+      canonical_name: "soylent",
+      external_id: "soy-1",
+      nutrients: [{ nutrient_id: "nut_protein", amount_per_100g: 4 }],
+    };
+    const meal = await logMeal(db, "Drink", [{ component: "soylent", qty_g: 100 }], strategy, 5_000);
+
+    state.result = {
+      canonical_name: "soylent",
+      external_id: "soy-1",
+      nutrients: [{ nutrient_id: "nut_protein", amount_per_100g: 9 }],
+    };
+
+    const summary = await reprocessMeals(db, strategy); // no from/to → full history
+    assert.equal(summary.meals_scanned, 1);
+    assert.equal(summary.components_relooked, 1);
+    assert.equal(summary.nutrients_added, 0, "no new nutrients this time");
+
+    const protein = getMealNutrition(db, meal).find((r) => r.nutrient === "Protein");
+    assert.ok(protein && Math.abs(protein.amount - 9) < 1e-9, `expected reprocessed Protein ≈ 9g, got ${protein?.amount}`);
+  });
+
+  it("excludes out-of-range meals and leaves unresolved components untouched", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    const { strategy, state } = makeMutableStrategy();
+
+    state.result = {
+      canonical_name: "kelp",
+      external_id: "kelp-1",
+      nutrients: [{ nutrient_id: "nut_protein", amount_per_100g: 2 }],
+    };
+    const inRange = await logMeal(db, "In", [{ component: "kelp", qty_g: 100 }], strategy, 10_000);
+    const outRange = await logMeal(db, "Out", [{ component: "kelp", qty_g: 100 }], strategy, 99_000);
+
+    // Reprocess only the early window; the later meal's eaten_at is outside it.
+    state.result = {
+      canonical_name: "kelp",
+      external_id: "kelp-1",
+      nutrients: [{ nutrient_id: "nut_protein", amount_per_100g: 7 }],
+    };
+    const summary = await reprocessMeals(db, strategy, { to: 50_000 });
+    assert.equal(summary.meals_scanned, 1, "only the in-range meal is scanned");
+    assert.equal(summary.components_relooked, 1);
+
+    // Both meals share the same component+ingredient, so the cached amount updates for both —
+    // but only the in-range meal counted toward meals_scanned. Confirm the value did refresh.
+    assert.ok(Math.abs(getMealNutrition(db, inRange).find((r) => r.nutrient === "Protein")!.amount - 7) < 1e-9);
+    assert.ok(Math.abs(getMealNutrition(db, outRange).find((r) => r.nutrient === "Protein")!.amount - 7) < 1e-9);
+  });
+
+  it("returns a null strategy result without throwing and counts no relooks", async () => {
+    const db = freshDb();
+    seedReferenceData(db);
+    const strategy: NutritionProvider = { async lookup() { return null; } };
+
+    await logMeal(db, "Seeded", [{ component: "grilled chicken", qty_g: 100 }], strategy, 1234);
+    const summary = await reprocessMeals(db, strategy);
+    assert.equal(summary.meals_scanned, 1);
+    assert.equal(summary.components_relooked, 0, "null lookups don't count as relooked");
+    assert.equal(summary.nutrients_added, 0);
+    // Seeded nutrition for grilled chicken is untouched.
+    assert.ok(getMealNutrition(db, listMeals(db)[0].id).length > 0);
   });
 });
 

@@ -291,13 +291,14 @@ describe("MCP integration", () => {
       await client.connect(transport);
 
       try {
-        // 1. tools/list should return our 3 tools
+        // 1. tools/list should return our 4 tools
         const toolsResult = await client.listTools();
         const toolNames = toolsResult.tools.map((t: any) => t.name);
         assert.ok(toolNames.includes("log_meal"), `log_meal missing from tools: ${JSON.stringify(toolNames)}`);
+        assert.ok(toolNames.includes("reprocess_meals"), `reprocess_meals missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("nutrition_for"), `nutrition_for missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("list_meals"), `list_meals missing from tools: ${JSON.stringify(toolNames)}`);
-        assert.equal(toolNames.length, 3, `Expected 3 tools, got ${toolNames.length}`);
+        assert.equal(toolNames.length, 4, `Expected 4 tools, got ${toolNames.length}`);
 
         // 2. Call log_meal
         const logResult = await client.callTool({
