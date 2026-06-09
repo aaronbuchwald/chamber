@@ -7,10 +7,7 @@
   "engines": {
     "node": ">=22 <23"
   },
-  "workspaces": [
-    "packages/*",
-    "apps/*"
-  ],
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "gen": "buf generate",
     "gen:check": "buf generate && git diff --exit-code -- '**/gen'",

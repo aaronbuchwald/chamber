@@ -9,3 +9,6 @@ plugins:
     opt:
       - target=ts
       - json_types=true
+      # Emit explicit .js import extensions so the generated ESM typechecks under
+      # tsconfig's NodeNext moduleResolution.
+      - import_extension=js
