@@ -1,0 +1,282 @@
+[
+  {
+    "component": "grilled chicken",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 31
+  },
+  {
+    "component": "grilled chicken",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "grilled chicken",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 3.6
+  },
+  {
+    "component": "grilled chicken",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "grilled chicken",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 1
+  },
+  {
+    "component": "brown rice",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 2.6
+  },
+  {
+    "component": "brown rice",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 23
+  },
+  {
+    "component": "brown rice",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 0.9
+  },
+  {
+    "component": "brown rice",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "brown rice",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0.5
+  },
+  {
+    "component": "olive oil",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "olive oil",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "olive oil",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 100
+  },
+  {
+    "component": "olive oil",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "olive oil",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0.6
+  },
+  {
+    "component": "broccoli",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 2.8
+  },
+  {
+    "component": "broccoli",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 6.6
+  },
+  {
+    "component": "broccoli",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 0.4
+  },
+  {
+    "component": "broccoli",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 89.2
+  },
+  {
+    "component": "broccoli",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0.7
+  },
+  {
+    "component": "egg",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 13
+  },
+  {
+    "component": "egg",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 1.1
+  },
+  {
+    "component": "egg",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 11
+  },
+  {
+    "component": "egg",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "egg",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 1.8
+  },
+  {
+    "component": "scrambled eggs",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 13
+  },
+  {
+    "component": "scrambled eggs",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 1.1
+  },
+  {
+    "component": "scrambled eggs",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 11
+  },
+  {
+    "component": "scrambled eggs",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "scrambled eggs",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 1.8
+  },
+  {
+    "component": "oatmeal",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 17
+  },
+  {
+    "component": "oatmeal",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 66
+  },
+  {
+    "component": "oatmeal",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 7
+  },
+  {
+    "component": "oatmeal",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "oatmeal",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 4.7
+  },
+  {
+    "component": "rolled oats",
+    "nutrient": "Protein",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 17
+  },
+  {
+    "component": "rolled oats",
+    "nutrient": "Carbs",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 66
+  },
+  {
+    "component": "rolled oats",
+    "nutrient": "Fat",
+    "kind": "macro",
+    "unit": "g",
+    "amount_per_100g": 7
+  },
+  {
+    "component": "rolled oats",
+    "nutrient": "Vitamin C",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 0
+  },
+  {
+    "component": "rolled oats",
+    "nutrient": "Iron",
+    "kind": "micro",
+    "unit": "mg",
+    "amount_per_100g": 4.7
+  }
+]
