@@ -19,6 +19,18 @@ export interface Row {
   [col: string]: Value;
 }
 
+/** Options for {@link DataHandle.insert}. */
+export interface InsertOpts {
+  /**
+   * Conflict policy on a UNIQUE/PRIMARY-KEY collision. `"ignore"` emits
+   * `INSERT OR IGNORE`, making the insert idempotent — used for reference-row
+   * caching where two concurrent resolutions of the same novel key would
+   * otherwise race to a UNIQUE violation. Omitted → a plain `INSERT` that throws
+   * on conflict (the default for ordinary append-only rows).
+   */
+  onConflict?: "ignore";
+}
+
 /** Query shape: an optional single-column equality and an optional ordering. */
 export interface QueryOpts {
   /** Restrict to rows where `col = val` (bound as a parameter). */
@@ -33,8 +45,12 @@ export interface QueryOpts {
  * write handle inside an atomic transaction and reads a read handle.
  */
 export interface DataHandle {
-  /** Insert one Bronze row. Throws on an unknown table/column or on a read handle. */
-  insert(table: string, row: Row): void;
+  /**
+   * Insert one Bronze row. Throws on an unknown table/column or on a read handle.
+   * Pass `{ onConflict: "ignore" }` to make the insert idempotent on a
+   * UNIQUE/PK collision (emits `INSERT OR IGNORE`).
+   */
+  insert(table: string, row: Row, opts?: InsertOpts): void;
   /** Query a base table or a Gold view by an optional single equality + order. */
   query(table: string, opts?: QueryOpts): Row[];
 }

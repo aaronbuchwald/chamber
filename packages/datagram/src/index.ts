@@ -6,7 +6,15 @@
  * docs/datagram-v0-plan.md.
  */
 
-export type { Backend, DataHandle, QueryOpts, Row, TableSchema, Value } from "./data.js";
+export type {
+  Backend,
+  DataHandle,
+  InsertOpts,
+  QueryOpts,
+  Row,
+  TableSchema,
+  Value,
+} from "./data.js";
 export {
   type BronzeTable,
   type ColumnDef,
@@ -48,3 +56,4 @@ export {
   uiHtml,
 } from "./runtime.js";
 export { SqliteBackend, type SqliteOptions, openSqlite } from "./backends/sqlite.js";
+export { humanize, humanizeField, pluralize, snakeCase } from "./strings.js";

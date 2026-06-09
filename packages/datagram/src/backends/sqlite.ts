@@ -17,7 +17,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
-import type { Backend, DataHandle, QueryOpts, Row, TableSchema, Value } from "../data.js";
+import type {
+  Backend,
+  DataHandle,
+  InsertOpts,
+  QueryOpts,
+  Row,
+  TableSchema,
+  Value,
+} from "../data.js";
 import { type BronzeTable, type DatasetSchema, type ReferenceTable, allowlist } from "../schema.js";
 
 export interface SqliteOptions {
@@ -106,14 +114,19 @@ export class SqliteBackend implements Backend {
     return column;
   }
 
-  private doInsert(table: string, row: Row): void {
+  private doInsert(table: string, row: Row, opts: InsertOpts = {}): void {
     const t = this.requireTable(table);
     if (t.view) throw new Error(`cannot insert into view "${table}"`);
     const cols = Object.keys(row);
     if (cols.length === 0) throw new Error(`insert into "${table}" with no columns`);
     for (const c of cols) this.requireColumn(t, c);
+    // `onConflict: "ignore"` → INSERT OR IGNORE, so a UNIQUE/PK collision is a
+    // no-op rather than a throw (idempotent reference-row caching). The verb is
+    // chosen from a fixed set here — never from caller text — so no user string
+    // ever reaches the SQL; identifiers remain allowlist members.
+    const verb = opts.onConflict === "ignore" ? "INSERT OR IGNORE" : "INSERT";
     const sql =
-      `INSERT INTO ${ident(table)} (${cols.map(ident).join(", ")}) ` +
+      `${verb} INTO ${ident(table)} (${cols.map(ident).join(", ")}) ` +
       `VALUES (${cols.map((c) => `@${c}`).join(", ")})`;
     this.db.prepare(sql).run(row);
   }
@@ -147,7 +160,7 @@ export class SqliteBackend implements Backend {
 
   writeHandle(): DataHandle {
     return {
-      insert: (table, row) => this.doInsert(table, row),
+      insert: (table, row, opts) => this.doInsert(table, row, opts),
       query: (table, opts) => this.doQuery(table, opts),
     };
   }
