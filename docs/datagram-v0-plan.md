@@ -78,6 +78,37 @@ machinery and adds the smallest possible new surface.
 - View-aware UI / per-day navigator (v0 = appkit's generic console, made live).
 - External nutrition enrichment (USDA/CalorieNinjas/LLM). v0 is **offline**:
   seeded reference data only, synchronous handlers.
+  **(Relaxed — see §3a.)** An injectable strategy seam + async resolution were
+  added after v0; offline remains the default, but online strategies (CalorieNinjas,
+  LLM) are now supported.
+
+### 3a. Amendment: injectable nutrition strategies (post-v0)
+
+The "offline / synchronous only" non-goal above was **deliberately relaxed** to make
+the way a component gets its nutrient values pluggable, without changing the data
+contract (the proto Meal/MealComponent/MealNutrition + NutritionService are untouched —
+strategy is purely *how* `component_nutrients` is populated):
+
+- **Strategy seam** (`apps/nutrition-dg/src/strategies.ts`): a `NutritionStrategy` has an
+  optional `seed` (pre-seed `component_nutrients` at build time) and an optional async
+  `resolve(component)` (dynamic per-component lookup).
+  - `offlineStrategy` (default) — supplies the bundled seed, no `resolve`; deterministic,
+    keyless, fully synchronous (identical to the original v0 behavior).
+  - `calorieNinjasStrategy` / `llmStrategy` — **no seed**; resolve over the network
+    (CalorieNinjas REST / Anthropic `claude-opus-4-8`). Selecting one creates
+    `component_nutrients` **EMPTY** — the offline seed JSON is never loaded on that path.
+- **Async runner change** (`packages/datagram/src/runner.ts`): handlers may now be a
+  two-phase `PreparedHandler` — `prepare(req)` runs OUTSIDE the per-write transaction
+  (async, network) and `commit(prepared, …)` runs the synchronous DB writes INSIDE it.
+  The single-point access guard and the atomic transaction are unchanged; plain sync
+  handlers still work (backwards compatible). `invokeOperation` awaits async results.
+- **Resolution flow**: `log_meal` resolves each distinct, not-yet-cached component via
+  `strategy.resolve` (network, outside the transaction), then atomically inserts the meal
+  + components + any new reference rows. Idempotent — "resolve once, replay forever";
+  a component the strategy can't resolve (null) simply doesn't contribute nutrition.
+- **Selection**: entry points read `NUTRITION_STRATEGY=offline|calorieninjas|llm`
+  (default `offline`). The keyed online strategies are covered by `npm run test:live`
+  (gated on the relevant API key, so default keyless CI stays green).
 
 ## 4. The proto contract (already committed & verified)
 
@@ -155,7 +186,9 @@ wrapped(args):
 ```
 
 (better-sqlite3 transactions are synchronous → v0 handlers are synchronous, which
-is fine because v0 enrichment is offline/seeded. Do not introduce async handlers.)
+is fine because v0 enrichment is offline/seeded. **Amended post-v0 (see §3a): async
+two-phase handlers are now supported** — network resolution runs outside the atomic
+transaction, the synchronous DB writes inside it; the offline default stays synchronous.)
 
 MCP tool input schema: provide a small `protoMessageToJsonSchema(descMessage)`
 (~40 lines) covering the types nutrition uses — string, double/int64→number,
@@ -179,10 +212,12 @@ Leave the existing `apps/nutrition` untouched (side-by-side comparison). New app
 - `src/service.ts` — three handlers over the `data` handle:
   - `list_meals` (read): `data.query("meals", { orderBy: ["eaten_at", "desc"] })`.
   - `nutrition_for` (read): `data.query("gold_meal_nutrition", { eq: ["meal_id", meal_id] })`.
-  - `log_meal` (write): parse `description` → components **offline/synchronously**
-    (port the offline path from `apps/nutrition/src/meal_parser.ts`/`strategies.ts`,
-    or accept explicit `components`), then `data.insert("meals", …)` +
+  - `log_meal` (write): parse `description` → components (the offline path, or
+    accept explicit `components`), then `data.insert("meals", …)` +
     `data.insert("meal_components", …)` inside the action's atomic transaction.
+    **Post-v0 (see §3a):** the injected `NutritionStrategy` resolves any uncached
+    component OUTSIDE that transaction first; offline supplies the seed and resolves
+    nothing.
 - `src/{http.ts,mcp.ts,cli.ts}` — three entry points wiring the proto service +
   handlers into `serveHttp` / `serveMcp` / `runCli`, mirroring `apps/nutrition/src`.
 - Register `nutrition-dg` in `agentgateway-all.yaml` / `start.sh` analogously to
