@@ -48,6 +48,7 @@ export const app = defineApp({
   operations: [
     {
       name: "log_meal",
+      mutates: true,
       summary:
         "Log a meal from a free-text description and resolve its nutrition end-to-end (Bronze → Silver → " +
         "Gold) in one call. Components and portions are estimated from the description by the configured " +

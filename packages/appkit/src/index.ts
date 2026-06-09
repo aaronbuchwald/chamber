@@ -17,6 +17,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -33,6 +34,11 @@ export interface Operation {
   input: z.ZodObject<z.ZodRawShape>;
   /** Implementation over the app's core logic. */
   handler: (args: any) => unknown | Promise<unknown>;
+  /** Whether this operation changes state. Mutating ops are broadcast on the
+   *  operation bus (see {@link invokeOperation}/{@link onMutation}) so live
+   *  views can refresh; read ops are silent (broadcasting on reads would loop a
+   *  view that re-fetches on every event). */
+  mutates?: boolean;
 }
 
 export interface AppDef {
@@ -51,6 +57,47 @@ export function arrayOf<T extends z.ZodTypeAny>(item: T) {
     (v) => (v === undefined || v === null ? v : Array.isArray(v) ? v : [v]),
     z.array(item)
   );
+}
+
+// ─────────────────────── operation dispatch + bus ─────────────────────────
+
+/** A state-changing operation completed. Emitted for any op marked `mutates`,
+ *  regardless of which front-end (CLI/HTTP/MCP) invoked it. */
+export interface MutationEvent {
+  /** Name of the operation that mutated state. */
+  op: string;
+  /** Completion time (epoch ms). */
+  at: number;
+}
+
+const operationBus = new EventEmitter();
+// Listeners are bounded in practice (one HTTP forwarder per process, plus tests),
+// but lift the cap so we never emit a spurious leak warning.
+operationBus.setMaxListeners(0);
+
+/** Subscribe to mutation events. Returns an unsubscribe function. */
+export function onMutation(listener: (evt: MutationEvent) => void): () => void {
+  operationBus.on("mutation", listener);
+  return () => operationBus.off("mutation", listener);
+}
+
+/**
+ * The single dispatch path every front-end runs operations through, so write
+ * behavior is identical no matter the entry point (CLI, HTTP, or MCP). On a
+ * successful *mutating* op it emits a {@link MutationEvent} on the operation
+ * bus; the HTTP front-end forwards those to connected SSE clients (GET /events)
+ * so embedded live views (e.g. an Obsidian iframe) refresh without polling.
+ *
+ * The bus is in-process: a write pushes to SSE clients of the *same* process
+ * that ran it. In the deployed stack that's the HTTP server — it handles the
+ * SPA's own writes and the gateway/MCP writes routed to its HTTP routes — so
+ * those all push. A standalone CLI run or direct stdio MCP server takes the
+ * identical dispatch path but has no SSE subscribers of its own.
+ */
+export async function invokeOperation(op: Operation, args: unknown): Promise<unknown> {
+  const result = await op.handler(args);
+  if (op.mutates) operationBus.emit("mutation", { op: op.name, at: Date.now() } satisfies MutationEvent);
+  return result;
 }
 
 // ───────────────────────────── CLI front-end ──────────────────────────────
@@ -121,7 +168,7 @@ export async function runCli(app: AppDef, argv: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  try { printResult(await op.handler(parsed.data)); }
+  try { printResult(await invokeOperation(op, parsed.data)); }
   catch (e: any) { console.error("Error:", e?.message ?? String(e)); process.exitCode = 1; }
 }
 
@@ -337,11 +384,39 @@ export function serveHttp(
     ui: "/ui",
     operations: app.operations.map((o) => ({ name: o.name, summary: o.summary })),
   });
+
+  // Live push: forward every mutation in this process — the SPA's own writes
+  // AND gateway/MCP writes routed to these HTTP routes — to all connected SSE
+  // clients, so embedded views (e.g. an Obsidian iframe) refresh without polling.
+  const sseClients = new Set<http.ServerResponse>();
+  onMutation((evt) => {
+    const frame = `data: ${JSON.stringify(evt)}\n\n`;
+    for (const client of sseClients) {
+      try { client.write(frame); } catch { /* client gone; dropped on its close handler */ }
+    }
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/ui") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       return res.end(uiHtml(app));
+    }
+    if (req.method === "GET" && url.pathname === "/events") {
+      // Server-Sent Events stream of MutationEvents. EventSource clients
+      // auto-reconnect, so this survives server restarts on the client side.
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      res.write(": connected\n\n");
+      sseClients.add(res);
+      const heartbeat = setInterval(() => {
+        try { res.write(": ping\n\n"); } catch { /* dropped on close */ }
+      }, 30_000);
+      req.on("close", () => { clearInterval(heartbeat); sseClients.delete(res); });
+      return;
     }
     if (req.method === "GET" && url.pathname === "/openapi.json") return sendJson(res, 200, openApiDoc(app));
     if (req.method === "GET") {
@@ -361,7 +436,7 @@ export function serveHttp(
       if (raw) { try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: "Invalid JSON body" }); } }
       const args = op.input.safeParse(body);
       if (!args.success) return sendJson(res, 400, { error: "Invalid arguments", issues: args.error.issues });
-      try { const result = await op.handler(args.data); return sendJson(res, 200, { result: result ?? null }); }
+      try { const result = await invokeOperation(op, args.data); return sendJson(res, 200, { result: result ?? null }); }
       catch (e: any) { return sendJson(res, 400, { error: e?.message ?? String(e) }); }
     }
     sendJson(res, 404, { error: "Not found" });
@@ -376,7 +451,7 @@ export async function serveMcp(app: AppDef): Promise<void> {
   const server = new McpServer({ name: app.name, version: app.version });
   for (const op of app.operations) {
     server.tool(op.name, op.summary, op.input.shape, async (args: any) => {
-      const result = await op.handler(args);
+      const result = await invokeOperation(op, args);
       const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text }] };
     });

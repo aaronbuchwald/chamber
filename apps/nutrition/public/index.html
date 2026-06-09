@@ -350,6 +350,16 @@
 
     el("refreshBtn").addEventListener("click", loadMeals);
     loadMeals();
+
+    // ── live updates ──────────────────────────────────────────────────────
+    // The server pushes a Server-Sent Event whenever any write lands (a meal
+    // logged here, via MCP through the gateway, or from another open view), so
+    // this list refreshes itself with no polling. EventSource auto-reconnects
+    // if the server restarts; if it's unavailable the Refresh button still works.
+    try {
+      const events = new EventSource("/events");
+      events.addEventListener("message", () => loadMeals());
+    } catch (e) { /* SSE unsupported — manual refresh remains available */ }
   </script>
 </body>
 </html>
