@@ -291,14 +291,22 @@ describe("MCP integration", () => {
       await client.connect(transport);
 
       try {
-        // 1. tools/list should return our 4 tools
+        // 1. tools/list should return our 5 tools
         const toolsResult = await client.listTools();
         const toolNames = toolsResult.tools.map((t: any) => t.name);
         assert.ok(toolNames.includes("log_meal"), `log_meal missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("reprocess_meals"), `reprocess_meals missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("nutrition_for"), `nutrition_for missing from tools: ${JSON.stringify(toolNames)}`);
         assert.ok(toolNames.includes("list_meals"), `list_meals missing from tools: ${JSON.stringify(toolNames)}`);
-        assert.equal(toolNames.length, 4, `Expected 4 tools, got ${toolNames.length}`);
+        assert.ok(toolNames.includes("capabilities"), `capabilities missing from tools: ${JSON.stringify(toolNames)}`);
+        assert.equal(toolNames.length, 5, `Expected 5 tools, got ${toolNames.length}`);
+
+        // The log_meal tool should auto-expose the image fields (appkit derives the MCP input
+        // schema from op.input.shape), so a vision client can post a photo.
+        const logTool = toolsResult.tools.find((t: any) => t.name === "log_meal") as any;
+        const logProps = logTool?.inputSchema?.properties ?? {};
+        assert.ok("image_base64" in logProps, "log_meal should expose image_base64 over MCP");
+        assert.ok("image_media_type" in logProps, "log_meal should expose image_media_type over MCP");
 
         // 2. Call log_meal
         const logResult = await client.callTool({

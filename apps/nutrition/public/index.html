@@ -111,6 +111,12 @@
     .comp-row button { padding: 8px 10px; }
     .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
     .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    input[type="file"] { padding: 7px 10px; }
+    .link-btn {
+      background: none; border: none; padding: 0; margin-left: 6px;
+      color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline;
+    }
+    .link-btn:hover { filter: brightness(1.15); }
   </style>
 </head>
 <body>
@@ -139,8 +145,13 @@
     <form method="dialog" class="form-inner" id="logForm">
       <h2>Log a meal · <span id="logDayLabel">Today</span></h2>
       <label for="mealDesc">What did you eat?</label>
-      <textarea id="mealDesc" name="description" rows="3" placeholder="sausage egg and cheese everything bagel" required></textarea>
+      <textarea id="mealDesc" name="description" rows="3" placeholder="sausage egg and cheese everything bagel"></textarea>
       <div class="hint">Describe your meal in plain language. The components and their portions are estimated automatically, then nutrition is looked up for each.</div>
+      <div id="imageControl" hidden>
+        <label for="mealImage">…or snap a photo</label>
+        <input type="file" id="mealImage" name="image" accept="image/*" capture="environment" />
+        <div class="hint" id="imageHint">Take a picture of your meal (or pick a saved one) and the foods are identified automatically. <button type="button" id="clearImageBtn" class="link-btn" hidden>Clear photo</button></div>
+      </div>
       <div class="form-actions">
         <button type="button" id="cancelBtn">Cancel</button>
         <button type="submit" class="primary" id="saveBtn">Log meal</button>
@@ -326,8 +337,39 @@
     // ── log-meal dialog ───────────────────────────────────────────────────
     const dialog = el("logDialog");
 
+    // Image meal input is only usable when the server's configured parser is vision-capable
+    // (MEAL_PARSER=llm); otherwise the control stays hidden and the API would reject a photo.
+    let imageInputSupported = false;
+    (async () => {
+      try {
+        const caps = await call("capabilities");
+        imageInputSupported = !!(caps && caps.image_input);
+      } catch (e) { /* no capabilities op / offline → leave the photo control hidden */ }
+      el("imageControl").hidden = !imageInputSupported;
+    })();
+
+    // Read a File as raw base64 (strip the "data:<mime>;base64," prefix the FileReader adds).
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+        reader.onerror = () => reject(reader.error || new Error("Could not read the image."));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function resetImageInput() {
+      el("mealImage").value = "";
+      el("clearImageBtn").hidden = true;
+    }
+    el("mealImage").addEventListener("change", () => {
+      el("clearImageBtn").hidden = !el("mealImage").files.length;
+    });
+    el("clearImageBtn").addEventListener("click", resetImageInput);
+
     el("logBtn").addEventListener("click", () => {
       el("mealDesc").value = "";
+      resetImageInput();
       // Reflect which day this meal will be logged to (the day currently being viewed).
       el("logDayLabel").textContent = fmtDay(selectedDate);
       dialog.showModal();
@@ -337,15 +379,23 @@
     el("logForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const description = el("mealDesc").value.trim();
-      if (!description) {
-        showError("Describe what you ate.");
+      const imageFile = imageInputSupported ? (el("mealImage").files[0] || null) : null;
+      if (!description && !imageFile) {
+        showError(imageInputSupported ? "Describe what you ate, or add a photo." : "Describe what you ate.");
         return;
       }
       const saveBtn = el("saveBtn");
       saveBtn.disabled = true;
       saveBtn.textContent = "Estimating…";
       try {
-        await call("log_meal", { description, eaten_at: eatenAtForDay(selectedDate) });
+        const body = { eaten_at: eatenAtForDay(selectedDate) };
+        if (description) body.description = description;
+        if (imageFile) {
+          // Send the photo as base64 in the JSON body (the API is JSON-only — no multipart).
+          body.image_base64 = await fileToBase64(imageFile);
+          body.image_media_type = imageFile.type || "image/jpeg";
+        }
+        await call("log_meal", body);
         dialog.close();
         await loadMeals();
       } catch (err) {
