@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+// The nutrition datagram. Bronze base tables (Meal, MealComponent), one Gold
+// view (MealNutrition, materialized by a transform), and three actions labeled
+// read/write. This single file is the source of truth from which the SDK
+// generates the data-access layer, the MCP server, and the live WebUI.
+package nutrition.v1;
+
+import "chamber/v1/options.proto";
+
+// ── Bronze base tables (writable; field #1 is the primary key) ──────────────
+message Meal {
+  string id = 1;
+  string name = 2;
+  int64 eaten_at = 3; // unix ms
+}
+
+message MealComponent {
+  string id = 1;
+  string meal_id = 2;
+  string component = 3;
+  double qty_g = 4;
+}
+
+// ── Gold view (derived; produced by a host-validated transform) ─────────────
+message MealNutrition {
+  option (chamber.v1.transform) = "transforms/gold_meal_nutrition.sql";
+  string meal_id = 1;
+  string nutrient = 2;
+  string kind = 3; // macro | micro
+  string unit = 4;
+  double amount = 5;
+}
+
+// ── Action messages ─────────────────────────────────────────────────────────
+message Component {
+  string component = 1;
+  double qty_g = 2;
+}
+
+message LogMealRequest {
+  string description = 1;            // free text; parsed into components offline
+  string name = 2;                   // optional explicit name
+  repeated Component components = 3; // optional explicit components (skips parsing)
+  int64 eaten_at = 4;                // optional; defaults to now
+}
+message LogMealResponse {
+  string meal_id = 1;
+}
+
+message NutritionForRequest {
+  string meal_id = 1;
+}
+message NutritionForResponse {
+  repeated MealNutrition nutrition = 1;
+}
+
+message ListMealsRequest {}
+message ListMealsResponse {
+  repeated Meal meals = 1;
+}
+
+// ── The datagram ──────────────────────────────────────────────────────────--
+service NutritionService {
+  option (chamber.v1.access) = ACCESS_READ_WRITE;
+
+  rpc LogMeal(LogMealRequest) returns (LogMealResponse) {
+    option (chamber.v1.effect) = EFFECT_WRITE;
+  }
+  rpc NutritionFor(NutritionForRequest) returns (NutritionForResponse) {
+    option (chamber.v1.effect) = EFFECT_READ;
+  }
+  rpc ListMeals(ListMealsRequest) returns (ListMealsResponse) {
+    option (chamber.v1.effect) = EFFECT_READ;
+  }
+}
