@@ -1,7 +1,0 @@
-[
-  { "id": "nut_protein", "name": "Protein",   "kind": "macro", "unit": "g"  },
-  { "id": "nut_carbs",   "name": "Carbs",     "kind": "macro", "unit": "g"  },
-  { "id": "nut_fat",     "name": "Fat",       "kind": "macro", "unit": "g"  },
-  { "id": "nut_vitc",    "name": "Vitamin C", "kind": "micro", "unit": "mg" },
-  { "id": "nut_iron",    "name": "Iron",      "kind": "micro", "unit": "mg" }
-]

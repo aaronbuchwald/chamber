@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+// Chamber datagram annotations (v0 — intentionally minimal).
+//
+// A datagram is a proto *package*: a service (its actions) + its messages
+// (source tables and curated views) + these options. From a service annotated
+// with these, the SDK generates the data-access layer, the MCP server, and a
+// live WebUI. v0 carries only three knobs; everything else is convention:
+//   * a message WITHOUT a `transform` option is a Bronze base table;
+//   * a message WITH a `transform` option is a derived (Gold) view;
+//   * field #1 of a base-table message is its primary key.
+package chamber.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Capability upper bound granted on a dataset. v0 enforces this as an inline
+// effect-vs-access check; the same surface gains a subject for ReBAC/PBAC later.
+enum Access {
+  ACCESS_UNSPECIFIED = 0;
+  ACCESS_READ = 1;
+  ACCESS_READ_WRITE = 2;
+}
+
+// Whether an action reads or writes. WRITE actions run inside a single atomic
+// transaction and broadcast a live-view refresh; READ actions are side-effect
+// free and never broadcast.
+enum Effect {
+  EFFECT_UNSPECIFIED = 0;
+  EFFECT_READ = 1;
+  EFFECT_WRITE = 2;
+}
+
+extend google.protobuf.ServiceOptions {
+  // Dataset-level capability bound for the datagram this service defines.
+  Access access = 50001;
+}
+
+extend google.protobuf.MethodOptions {
+  Effect effect = 50002;
+}
+
+extend google.protobuf.MessageOptions {
+  // Relative path to a host-validated transform (a read-only SQL view) that
+  // materializes this message as a derived/Gold view. Presence marks the
+  // message as derived rather than a writable Bronze base table.
+  string transform = 50003;
+}
