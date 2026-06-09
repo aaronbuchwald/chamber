@@ -47,7 +47,7 @@ async function call(
   assert.ok(op, `operation ${name} exists`);
   const parsed = op.validate(body);
   assert.ok(parsed.ok, `valid args for ${name}`);
-  return await invokeOperation(op, parsed.value);
+  return await invokeOperation(app, op, parsed.value);
 }
 
 test("empty-seed invariant: an online strategy creates component_nutrients EMPTY (no seed loaded)", () => {
@@ -95,6 +95,70 @@ test("empty-seed invariant: with NO seed, an unresolvable component yields zero 
     };
     assert.equal(nutrition.length, 0, "no seed + unresolvable component → empty Gold view");
     assert.equal(calls(), 1, "resolve() was consulted exactly once for the component");
+  } finally {
+    close();
+  }
+});
+
+test("concurrent log_meal for the SAME novel component: both meals land, reference rows deduped (no PK race)", async () => {
+  // Two requests for the same never-seen component interleave: each `prepare`
+  // checks the cache OUTSIDE the txn, both miss, both resolve, and both `commit`
+  // try to cache the same (component, nutrient) composite-PK rows. Without the
+  // INSERT OR IGNORE fix the second commit hits the UNIQUE constraint and rolls
+  // its whole meal back. A gate makes both prepares overlap before either commits.
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const strategy: NutritionStrategy = {
+    name: "gated-stub",
+    async resolve(component: string): Promise<ReferenceRow[] | null> {
+      calls++;
+      await gate; // hold BOTH resolutions open so their prepares interleave
+      return [
+        { component, nutrient: "Protein", kind: "macro", unit: "g", amount_per_100g: 20 },
+        { component, nutrient: "Iron", kind: "micro", unit: "mg", amount_per_100g: 2 },
+      ];
+    },
+  };
+  const { app, close } = buildNutritionDatagram({ strategy });
+  try {
+    const logOp = app.operations.find((o) => o.name === "log_meal");
+    assert.ok(logOp);
+    const args = () => {
+      const parsed = logOp.validate({ components: [{ component: "novelfood", qty_g: 100 }] });
+      assert.ok(parsed.ok);
+      return parsed.value;
+    };
+    // Start BOTH invocations; their prepares both run resolve() and block on the
+    // gate, so neither has committed yet — the classic interleave.
+    const first = invokeOperation(app, logOp, args()) as Promise<{ meal_id: string }>;
+    const second = invokeOperation(app, logOp, args()) as Promise<{ meal_id: string }>;
+    await new Promise((r) => setTimeout(r, 20)); // let both prepares reach the gate
+    release(); // both resolutions complete → both commits run
+    const [a, b] = await Promise.all([first, second]);
+
+    assert.ok(a.meal_id && b.meal_id, "both meals committed (neither rolled back)");
+    assert.notEqual(a.meal_id, b.meal_id, "two distinct meals");
+    assert.equal(
+      calls,
+      2,
+      "both requests resolved the component (the interleave actually happened)",
+    );
+
+    // Both meals persisted…
+    const { meals } = (await call(app, "list_meals", {})) as { meals: unknown[] };
+    assert.equal(meals.length, 2, "both meals landed");
+
+    // …and the reference rows are deduped to one (component, nutrient) per pair.
+    const { nutrition: nutA } = (await call(app, "nutrition_for", { meal_id: a.meal_id })) as {
+      nutrition: Array<{ nutrient: string; amount: number }>;
+    };
+    const byNutrient = new Map(nutA.map((r) => [r.nutrient, r.amount]));
+    assert.equal(byNutrient.get("Protein"), 20, "single deduped Protein row (20/100g × 100g)");
+    assert.equal(byNutrient.get("Iron"), 2, "single deduped Iron row");
+    assert.equal(nutA.length, 2, "exactly the two deduped nutrient rows, no duplicates");
   } finally {
     close();
   }

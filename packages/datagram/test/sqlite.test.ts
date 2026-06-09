@@ -13,7 +13,9 @@ import { resolve } from "node:path";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PlaceOrderRequestSchema, StoreService } from "@chamber/proto/testkit/v1/store_pb";
+// testkit.v1 is a TEST-ONLY fixture: generated in @chamber/proto's gen tree but
+// excluded from its public exports, so it's reached only via this relative path.
+import { PlaceOrderRequestSchema, StoreService } from "../../proto/gen/testkit/v1/store_pb.js";
 import { deriveSchema, openSqlite, protoMessageToJsonSchema } from "../src/index.js";
 import type { ReferenceTable } from "../src/index.js";
 

@@ -24,10 +24,26 @@ import { fileURLToPath } from "node:url";
 import { clone, create, setExtension } from "@bufbuild/protobuf";
 import { ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
 import { Access, access as accessExt } from "@chamber/proto/chamber/v1/options_pb";
-import { StoreService } from "@chamber/proto/testkit/v1/store_pb";
-import type { ReferenceTable } from "../src/index.js";
-import { deriveSchema, invokeOperation, openSqlite, protoToOperations } from "../src/index.js";
+// testkit.v1 is a TEST-ONLY fixture. It is generated into @chamber/proto's gen
+// tree (the single home for codegen) but NOT part of that package's public
+// exports map, so production code can't import it — SDK tests reach it via this
+// relative path into the gen dir instead.
+import { StoreService } from "../../proto/gen/testkit/v1/store_pb.js";
+import type { Operation, ReferenceTable } from "../src/index.js";
+import {
+  type AppDef,
+  defineApp,
+  deriveSchema,
+  invokeOperation,
+  openSqlite,
+  protoToOperations,
+} from "../src/index.js";
 import type { Handlers, PreparedHandler } from "../src/runner.js";
+
+/** Wrap a single op in a throwaway app so invokeOperation has a bus to emit on. */
+function appFor(op: Operation): AppDef {
+  return defineApp({ name: "testkit", version: "0.0.0", operations: [op] });
+}
 
 const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -60,17 +76,17 @@ function placeOp(backend: ReturnType<typeof openBackend>, placeOrder: Handlers["
   assert.ok(op);
   const parsed = op.validate({ label: "x" });
   assert.ok(parsed.ok);
-  return { op, args: parsed.value };
+  return { app: appFor(op), op, args: parsed.value };
 }
 
 test("sync handler: runs inside the per-write transaction and commits (v0 shape unchanged)", () => {
   const backend = openBackend();
   try {
-    const { op, args } = placeOp(backend, (_req, { data }) => {
+    const { app, op, args } = placeOp(backend, (_req, { data }) => {
       data.insert("orders", { id: "o1", label: "sync", placed_at: 1 });
       return { order_id: "o1" };
     });
-    const result = invokeOperation(op, args);
+    const result = invokeOperation(app, op, args);
     assert.equal((result as { order_id: string }).order_id, "o1");
     assert.equal(backend.readHandle().query("orders").length, 1);
   } finally {
@@ -96,8 +112,8 @@ test("async two-phase handler: prepare (outside txn) resolves, commit (inside tx
         return { order_id: "o2" };
       },
     };
-    const { op, args } = placeOp(backend, handler);
-    const result = await invokeOperation(op, args);
+    const { app, op, args } = placeOp(backend, handler);
+    const result = await invokeOperation(app, op, args);
     assert.equal((result as { order_id: string }).order_id, "o2");
     // prepare fully completes before commit begins — no transaction is held across the await.
     assert.deepEqual(order, ["prepare:start", "prepare:end", "commit"]);
@@ -123,8 +139,11 @@ test("atomicity: a throw in commit rolls back the whole write (after a successfu
         throw new Error("boom in commit");
       },
     };
-    const { op, args } = placeOp(backend, handler);
-    await assert.rejects(() => invokeOperation(op, args) as Promise<unknown>, /boom in commit/);
+    const { app, op, args } = placeOp(backend, handler);
+    await assert.rejects(
+      () => invokeOperation(app, op, args) as Promise<unknown>,
+      /boom in commit/,
+    );
     assert.equal(backend.readHandle().query("orders").length, 0, "orders rolled back");
     assert.equal(backend.readHandle().query("order_lines").length, 0, "order_lines rolled back");
   } finally {
@@ -161,7 +180,10 @@ test("access guard: a write on a read-only dataset is rejected before prepare ru
     assert.ok(op);
     const parsed = op.validate({ label: "x" });
     assert.ok(parsed.ok);
-    assert.throws(() => invokeOperation(op, parsed.value), /forbidden: read-only dataset/);
+    assert.throws(
+      () => invokeOperation(appFor(op), op, parsed.value),
+      /forbidden: read-only dataset/,
+    );
     assert.equal(prepared, false, "prepare never ran — guard fires first");
   } finally {
     backend.close();

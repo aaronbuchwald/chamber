@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { after, test } from "node:test";
-import { serveHttp } from "@chamber/datagram";
+import { invokeOperation, onMutation, serveHttp } from "@chamber/datagram";
 import { buildNutritionDatagram } from "../src/service.js";
 
 const { app, close } = buildNutritionDatagram();
@@ -72,6 +72,39 @@ test("live view: a mutating write pushes an SSE event to a connected /events cli
   const evt = await eventPromise;
   assert.equal(evt.op, "log_meal", "the mutation event names the write op");
   assert.equal(typeof evt.at, "number");
+});
+
+test("per-app bus isolation: a mutation on app A does NOT fire app B's mutation listener", async () => {
+  // Two datagrams composed in ONE process must not cross-fire each other's
+  // mutation events (the bug a process-global bus caused: every UI refreshing on
+  // every other app's writes). The bus is scoped per AppDef, so a write dispatched
+  // through app A only notifies A's listeners.
+  const a = buildNutritionDatagram();
+  const b = buildNutritionDatagram();
+  try {
+    let aFired = 0;
+    let bFired = 0;
+    const offA = onMutation(a.app, () => {
+      aFired++;
+    });
+    const offB = onMutation(b.app, () => {
+      bFired++;
+    });
+
+    const logA = a.app.operations.find((o) => o.name === "log_meal");
+    assert.ok(logA);
+    const parsed = logA.validate({ description: "oatmeal" });
+    assert.ok(parsed.ok);
+    await invokeOperation(a.app, logA, parsed.value);
+
+    assert.equal(aFired, 1, "app A's listener saw A's write");
+    assert.equal(bFired, 0, "app B's listener did NOT see A's write (buses are isolated)");
+    offA();
+    offB();
+  } finally {
+    a.close();
+    b.close();
+  }
 });
 
 test("a read (list_meals) does NOT push an SSE event", async () => {

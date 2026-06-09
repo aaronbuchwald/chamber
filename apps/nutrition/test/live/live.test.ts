@@ -28,7 +28,7 @@ async function call(
   assert.ok(op, `operation ${name} exists`);
   const parsed = op.validate(body);
   assert.ok(parsed.ok, `valid args for ${name}`);
-  return await invokeOperation(op, parsed.value);
+  return await invokeOperation(app, op, parsed.value);
 }
 
 /** Log "grilled chicken" under `strategy` (no seed) and assert protein resolved non-zero. */

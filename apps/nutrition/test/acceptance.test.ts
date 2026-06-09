@@ -17,6 +17,7 @@ import { ServiceOptionsSchema } from "@bufbuild/protobuf/wkt";
 import {
   type AppDef,
   type Operation,
+  defineApp,
   deriveSchema,
   invokeOperation,
   mcpServer,
@@ -39,7 +40,7 @@ function call(app: AppDef, name: string, body: unknown): unknown {
   const o = op(app, name);
   const parsed = o.validate(body);
   assert.ok(parsed.ok, `valid args for ${name}: ${parsed.ok ? "" : parsed.errors.join("; ")}`);
-  return invokeOperation(o, parsed.value);
+  return invokeOperation(app, o, parsed.value);
 }
 
 test("injection: a SQL-injection meal name round-trips as a bound param; meals survives", () => {
@@ -88,9 +89,10 @@ test("atomicity: a handler that throws mid-log_meal leaves no rows in meals/meal
   try {
     const logOp = ops.find((o) => o.name === "log_meal");
     assert.ok(logOp);
+    const app = defineApp({ name: "nutrition", version: "0.0.0", operations: ops });
     const parsed = logOp.validate({ description: "x" });
     assert.ok(parsed.ok);
-    assert.throws(() => invokeOperation(logOp, parsed.value), /boom mid-write/);
+    assert.throws(() => invokeOperation(app, logOp, parsed.value), /boom mid-write/);
 
     const meals = backend.readHandle().query("meals");
     const comps = backend.readHandle().query("meal_components");
@@ -109,7 +111,7 @@ test("access guard: ACCESS_READ makes log_meal forbidden; reads still work", () 
     const logOp = op(app, "log_meal");
     const parsed = logOp.validate({ description: "oatmeal" });
     assert.ok(parsed.ok);
-    assert.throws(() => invokeOperation(logOp, parsed.value), /forbidden: read-only dataset/);
+    assert.throws(() => invokeOperation(app, logOp, parsed.value), /forbidden: read-only dataset/);
 
     // Reads are unaffected.
     const meals = (call(app, "list_meals", {}) as { meals: unknown[] }).meals;
