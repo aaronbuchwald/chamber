@@ -5,8 +5,11 @@
   "type": "module",
   "description": "Generated TypeScript types + descriptors for the repo's protobuf contracts (chamber.v1 options, domain datagrams). The single home for generated code — domain packages depend on this so neither the SDK nor any app vendors another domain's generated code.",
   "license": "MIT",
+  "comment:exports": "Only the PRODUCTION contract namespaces are publicly exported. The test-only testkit.v1 fixture is generated here (one home for codegen) but deliberately NOT exported, so production code can't import it; the SDK's own tests reach it via a relative path into ./gen/testkit.",
   "exports": {
-    "./*": "./gen/*.ts"
+    "./chamber/*": "./gen/chamber/*.ts",
+    "./nutrition/*": "./gen/nutrition/*.ts",
+    "./testkit/*": null
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
