@@ -13,11 +13,20 @@ contract under [`proto/`](proto/) is the source of truth.
 
 ```
 proto/                 # the contract (chamber.v1 options + nutrition.v1 datagram) — verified, do not gold-plate
-packages/              # SDK runtime (@chamber/datagram): gen/ + data handle + proto→ops runner
-apps/                  # datagram apps (nutrition: the v0 port)
+packages/datagram/     # SDK runtime (@chamber/datagram): gen/ + data handle + proto→ops runner — NO UI
+packages/console/      # @chamber/console: a generic dev console (consoleHtml) — a separate UI component
+apps/nutrition/        # the nutrition datagram (the v0 port)
+apps/nutrition/ui/     # the nutrition app's OWN static UI component, served at /ui
 docs/datagram-v0-plan.md  # the v0 handoff / plan
 SPEC.md                # the broader Chamber spec (§7 data store, §11 grants, §12 security)
 ```
+
+The **UI layer is a separate component from the datagram layer**. The SDK ships
+no UI of its own; a front-end is mounted at `GET /ui` only when the caller passes
+a `ui` option to `serve()`/`serveHttp()`: `ui: { dir }` serves a static
+component (the nutrition app's own UI), or `ui: { html }` serves a pre-rendered
+string. An app opts into the generic developer console by importing
+[`@chamber/console`](packages/console/) and passing `ui: { html: consoleHtml(app) }`.
 
 ## Prerequisites
 
