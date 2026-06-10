@@ -201,6 +201,14 @@ the existing `serveHttp(app, port, { staticDir })` (gives HTTP JSON + `/openapi.
 + `/ui` + `/events` SSE) and `serveMcp(app)`. The generic `/ui` console, made live
 by the existing `/events` wiring, **is** the v0 generated WebUI.
 
+> **UI/datagram layer separation (post-v0 decision).** The UI is now a SEPARATE
+> component from the datagram layer. The SDK ships no UI: `serveHttp` mounts a
+> front-end at `/ui` only when given a neutral `ui?: { dir } | { html }` option
+> (no option → `/ui` is 404). The generic console moved out of the SDK into its
+> own package, `@chamber/console` (`consoleHtml(app)`), and an app opts in via
+> `ui: { html: consoleHtml(app) }`. The nutrition app instead ships its OWN
+> static UI component under `apps/nutrition/ui`, mounted with `ui: { dir }`.
+
 ## 6. Nutrition port (`apps/nutrition`)
 
 Leave the existing `apps/nutrition` untouched (side-by-side comparison). New app:
