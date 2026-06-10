@@ -43,6 +43,7 @@ export {
   type ServeHandle,
   type ServeHttpOptions,
   type ServeOptions,
+  type UiMount,
   type ValidateResult,
   defineApp,
   invokeOperation,
@@ -53,7 +54,6 @@ export {
   serve,
   serveHttp,
   serveMcp,
-  uiHtml,
 } from "./runtime.js";
 export { SqliteBackend, type SqliteOptions, openSqlite } from "./backends/sqlite.js";
 export { humanize, humanizeField, pluralize, snakeCase } from "./strings.js";
