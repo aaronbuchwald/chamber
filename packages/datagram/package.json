@@ -1,0 +1,25 @@
+{
+  "name": "@chamber/datagram",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chamber datagram SDK runtime — proto-defined datasets generate a typed string-free data layer, an MCP server, and a live WebUI.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./backends/sqlite": "./src/backends/sqlite.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.3",
+    "@chamber/proto": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}

@@ -1,11 +1,16 @@
-# Generates TypeScript message types + descriptors from the datagram protos.
+# Generates TypeScript message types + descriptors from the datagram protos into
+# the neutral @chamber/proto package (packages/proto/gen) — the single home for
+# generated code, so neither the SDK nor any app vendors another domain's codegen.
 # Uses the LOCAL protoc-gen-es plugin (npm @bufbuild/protoc-gen-es on PATH via
 # node_modules/.bin) so codegen needs no network — important on a fresh box.
 #   npm i -D @bufbuild/protoc-gen-es   then:   buf generate
 version: v2
 plugins:
   - local: protoc-gen-es
-    out: packages/datagram/gen
+    out: packages/proto/gen
     opt:
       - target=ts
       - json_types=true
+      # Emit explicit .js import extensions so the generated ESM typechecks under
+      # tsconfig's NodeNext moduleResolution.
+      - import_extension=js

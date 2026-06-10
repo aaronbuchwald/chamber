@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+// A generic, domain-neutral datagram used to test the @chamber/datagram SDK in
+// isolation — it deliberately has nothing to do with any real app. Same shape as
+// any datagram: Bronze base tables (Order, OrderLine), one Gold view (OrderTotal,
+// materialized by a transform), and read/write actions. Keeping the SDK's tests on
+// this fixture (not on a real domain like nutrition) is what keeps the SDK
+// package free of domain coupling.
+package testkit.v1;
+
+import "chamber/v1/options.proto";
+
+// ── Bronze base tables (writable; field #1 is the primary key) ──────────────
+message Order {
+  string id = 1;
+  string label = 2;
+  int64 placed_at = 3; // unix ms
+}
+
+message OrderLine {
+  string id = 1;
+  string order_id = 2;
+  string sku = 3;
+  double qty = 4;
+}
+
+// ── Gold view (derived; produced by a host-validated transform) ─────────────
+message OrderTotal {
+  option (chamber.v1.transform) = "transforms/gold_order_totals.sql";
+  string order_id = 1;
+  string metric = 2;
+  string unit = 3;
+  double amount = 4;
+}
+
+// ── Action messages ─────────────────────────────────────────────────────────
+message Line {
+  string sku = 1;
+  double qty = 2;
+}
+
+message PlaceOrderRequest {
+  string label = 1;
+  repeated Line lines = 2;
+  int64 placed_at = 3;
+}
+message PlaceOrderResponse {
+  string order_id = 1;
+}
+
+message OrderTotalsRequest {
+  string order_id = 1;
+}
+message OrderTotalsResponse {
+  repeated OrderTotal totals = 1;
+}
+
+message ListOrdersRequest {}
+message ListOrdersResponse {
+  repeated Order orders = 1;
+}
+
+// ── The datagram ──────────────────────────────────────────────────────────--
+service StoreService {
+  option (chamber.v1.access) = ACCESS_READ_WRITE;
+
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse) {
+    option (chamber.v1.effect) = EFFECT_WRITE;
+  }
+  rpc OrderTotals(OrderTotalsRequest) returns (OrderTotalsResponse) {
+    option (chamber.v1.effect) = EFFECT_READ;
+  }
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
+    option (chamber.v1.effect) = EFFECT_READ;
+  }
+}
