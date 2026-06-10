@@ -7,16 +7,25 @@
  *     instance via the SDK's `serve()`. HTTP is always on (API + /openapi.json + /ui +
  *     /events SSE); `--mcp` also attaches an MCP stdio controller. Because both
  *     controllers share the same instance and bus, an MCP write live-updates the open
- *     /ui console — no second process, no shared DB file, no gateway round-trip.
+ *     /ui — no second process, no shared DB file, no gateway round-trip.
+ *
+ * The UI layer is a SEPARATE component from the datagram layer: the SDK ships no
+ * UI, so this app mounts its OWN static front-end (apps/nutrition/ui) at /ui. (To
+ * use the generic developer console instead, import `consoleHtml` from
+ * `@chamber/console` and pass `ui: { html: consoleHtml(app) }`.)
  *   - `<operation> [--flags]` — a one-shot CLI call over the same instance (e.g.
  *     `nutrition log_meal --description "oatmeal"`), then exits. (Per the v0 plan the
  *     CLI is a one-shot client, not a long-running controller.)
  */
 
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { runCli, serve } from "@chamber/datagram";
 import { APP_DIR, buildNutritionDatagram } from "./service.js";
 import { selectStrategy } from "./strategies.js";
+
+/** The app's own static UI component, served at GET /ui. */
+const UI_DIR = resolve(APP_DIR, "ui");
 
 const argv = process.argv.slice(2);
 const [cmd, ...rest] = argv;
@@ -51,7 +60,7 @@ if (cmd === "serve") {
     process.exit(1);
   }
   const handle = await serve(app, {
-    http: port !== undefined ? { port } : {},
+    http: { ...(port !== undefined ? { port } : {}), ui: { dir: UI_DIR } },
     mcp,
   });
   // Long-running: shut the controllers and the backend down cleanly on signals.
